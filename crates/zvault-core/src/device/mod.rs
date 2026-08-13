@@ -35,6 +35,17 @@
 //! in whatever [`SecureStorage`] implementation the caller provides.  Only the
 //! public key and device_id are kept in [`DeviceIdentity`].
 
+// ─── Sub-modules ─────────────────────────────────────────────────────────────
+
+/// Biometric unlock: wrap/unwrap the vault key with an OS-enclave-bound key.
+#[cfg(feature = "biometric")]
+pub mod biometric;
+
+/// [`SecureStorage`] backend using the OS keychain via the `keyring` crate.
+/// Not available on WASM targets (browser extension uses `browser.storage.local`).
+#[cfg(all(not(target_arch = "wasm32"), feature = "keyring-storage"))]
+pub mod keyring_storage;
+
 use chrono::Utc;
 use k256::ecdsa::SigningKey;
 use serde::{Deserialize, Serialize};
