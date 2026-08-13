@@ -1,0 +1,32 @@
+[package]
+name = "zvault-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "ZVault desktop app — Tauri v2 shell"
+authors = ["ZVault Contributors"]
+license = "MIT OR Apache-2.0"
+rust-version = "1.75"
+publish = false
+
+# Keep this crate out of the root workspace — Tauri has its own heavy
+# dependency tree that we don't want polluting workspace resolution.
+[workspace]
+
+[dependencies]
+# Tauri v2
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.16", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# ZVault core library (path dependency)
+zvault-core = { path = "../../../crates/zvault-core", default-features = false }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
