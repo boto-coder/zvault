@@ -283,16 +283,281 @@ impl Vault {
         }
     }
 
-    // ── M2 CRUD stubs ─────────────────────────────────────────────────────
+    // ── M2 CRUD ───────────────────────────────────────────────────────────
 
-    // pub fn add_item(&mut self, item: VaultItem) { todo!("M2") }
-    // pub fn update_item(&mut self, item: VaultItem) -> crate::Result<()> { todo!("M2") }
-    // pub fn delete_item(&mut self, id: Uuid) -> crate::Result<()> { todo!("M2") }
-    // pub fn get_item(&self, id: Uuid) -> Option<&VaultItem> { todo!("M2") }
+    /// Append a new item to the vault.
+    ///
+    /// Bumps [`Vault::version`] and updates [`Vault::updated_at`].
+    pub fn add_item(&mut self, item: VaultItem) {
+        self.items.push(item);
+        self.version += 1;
+        self.updated_at = Utc::now();
+    }
+
+    /// Replace an existing item (matched by [`VaultItem::id`]) with the
+    /// supplied value.
+    ///
+    /// Bumps [`Vault::version`] and updates [`Vault::updated_at`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::ItemNotFound`] if no item with that ID exists.
+    pub fn update_item(&mut self, item: VaultItem) -> crate::Result<()> {
+        let id = item.id;
+        let slot = self
+            .items
+            .iter_mut()
+            .find(|i| i.id == id)
+            .ok_or(crate::Error::ItemNotFound(id))?;
+        *slot = item;
+        self.version += 1;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
+    /// Remove the item with the given UUID from the vault.
+    ///
+    /// Bumps [`Vault::version`] and updates [`Vault::updated_at`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::ItemNotFound`] if no item with that ID exists.
+    pub fn delete_item(&mut self, id: Uuid) -> crate::Result<()> {
+        let pos = self
+            .items
+            .iter()
+            .position(|i| i.id == id)
+            .ok_or(crate::Error::ItemNotFound(id))?;
+        self.items.swap_remove(pos);
+        self.version += 1;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
+    /// Return a reference to the item with the given UUID, or `None`.
+    #[must_use]
+    pub fn get_item(&self, id: Uuid) -> Option<&VaultItem> {
+        self.items.iter().find(|i| i.id == id)
+    }
+
+    /// Return a slice over all items in the vault.
+    #[must_use]
+    pub fn list_items(&self) -> &[VaultItem] {
+        &self.items
+    }
+
+    // ── M2 Serialisation ──────────────────────────────────────────────────
+
+    /// Serialise the vault to JSON bytes.
+    ///
+    /// The resulting bytes are passed to the crypto layer for encryption.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::Serialisation`] if serialisation fails.
+    pub fn to_json(&self) -> crate::Result<Vec<u8>> {
+        serde_json::to_vec(self).map_err(|e| crate::Error::Serialisation(e.to_string()))
+    }
+
+    /// Deserialise a vault from JSON bytes produced by [`Vault::to_json`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::Serialisation`] if deserialisation fails.
+    pub fn from_json(data: &[u8]) -> crate::Result<Self> {
+        serde_json::from_slice(data).map_err(|e| crate::Error::Serialisation(e.to_string()))
+    }
 }
 
 impl Default for Vault {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ─── Submodules ──────────────────────────────────────────────────────────────
+
+pub mod vault_file;
+pub use vault_file::VaultFile;
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    fn login_item(name: &str) -> VaultItem {
+        let mut item = VaultItem::new(ItemKind::Login, name);
+        item.username = Some("alice@example.com".into());
+        item.password = Some("hunter2".into());
+        item
+    }
+
+    // ── add_item / get_item / list_items ─────────────────────────────────────
+
+    #[test]
+    fn add_item_appends_and_is_retrievable() {
+        let mut vault = Vault::new();
+        let item = login_item("GitHub");
+        let id = item.id;
+
+        vault.add_item(item);
+
+        assert!(vault.get_item(id).is_some());
+        assert_eq!(vault.list_items().len(), 1);
+        assert_eq!(vault.get_item(id).unwrap().name, "GitHub");
+    }
+
+    #[test]
+    fn get_item_unknown_id_returns_none() {
+        let vault = Vault::new();
+        assert!(vault.get_item(Uuid::new_v4()).is_none());
+    }
+
+    #[test]
+    fn list_items_empty_vault() {
+        let vault = Vault::new();
+        assert!(vault.list_items().is_empty());
+    }
+
+    #[test]
+    fn list_items_returns_all() {
+        let mut vault = Vault::new();
+        vault.add_item(login_item("GitHub"));
+        vault.add_item(login_item("GitLab"));
+        assert_eq!(vault.list_items().len(), 2);
+    }
+
+    // ── update_item ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn update_item_replaces_in_place() {
+        let mut vault = Vault::new();
+        let item = login_item("GitHub");
+        let id = item.id;
+        vault.add_item(item);
+
+        let mut updated = login_item("GitHub Updated");
+        updated.id = id; // same id, new name
+        vault.update_item(updated).expect("update should succeed");
+
+        assert_eq!(vault.get_item(id).unwrap().name, "GitHub Updated");
+        assert_eq!(vault.list_items().len(), 1);
+    }
+
+    #[test]
+    fn update_item_not_found_returns_error() {
+        let mut vault = Vault::new();
+        let missing = login_item("Ghost");
+
+        let err = vault.update_item(missing).unwrap_err();
+        assert!(
+            matches!(err, crate::Error::ItemNotFound(_)),
+            "expected ItemNotFound, got {err:?}"
+        );
+    }
+
+    // ── delete_item ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn delete_item_removes_it() {
+        let mut vault = Vault::new();
+        let item = login_item("GitHub");
+        let id = item.id;
+        vault.add_item(item);
+
+        vault.delete_item(id).expect("delete should succeed");
+
+        assert!(vault.get_item(id).is_none());
+        assert!(vault.list_items().is_empty());
+    }
+
+    #[test]
+    fn delete_item_not_found_returns_error() {
+        let mut vault = Vault::new();
+
+        let err = vault.delete_item(Uuid::new_v4()).unwrap_err();
+        assert!(
+            matches!(err, crate::Error::ItemNotFound(_)),
+            "expected ItemNotFound, got {err:?}"
+        );
+    }
+
+    // ── version bumps ────────────────────────────────────────────────────────
+
+    #[test]
+    fn add_item_bumps_version() {
+        let mut vault = Vault::new();
+        assert_eq!(vault.version, 0);
+        vault.add_item(login_item("A"));
+        assert_eq!(vault.version, 1);
+        vault.add_item(login_item("B"));
+        assert_eq!(vault.version, 2);
+    }
+
+    #[test]
+    fn update_item_bumps_version() {
+        let mut vault = Vault::new();
+        let item = login_item("A");
+        let id = item.id;
+        vault.add_item(item); // version = 1
+
+        let mut replacement = login_item("A v2");
+        replacement.id = id;
+        vault.update_item(replacement).unwrap(); // version = 2
+        assert_eq!(vault.version, 2);
+    }
+
+    #[test]
+    fn delete_item_bumps_version() {
+        let mut vault = Vault::new();
+        let item = login_item("A");
+        let id = item.id;
+        vault.add_item(item); // version = 1
+
+        vault.delete_item(id).unwrap(); // version = 2
+        assert_eq!(vault.version, 2);
+    }
+
+    // ── to_json / from_json round-trip ───────────────────────────────────────
+
+    #[test]
+    fn json_roundtrip_empty_vault() {
+        let vault = Vault::new();
+        let json = vault.to_json().expect("serialise should succeed");
+        let restored = Vault::from_json(&json).expect("deserialise should succeed");
+
+        assert_eq!(vault.id, restored.id);
+        assert_eq!(vault.version, restored.version);
+        assert!(restored.items.is_empty());
+    }
+
+    #[test]
+    fn json_roundtrip_with_items() {
+        let mut vault = Vault::new();
+        let item = login_item("GitHub");
+        let id = item.id;
+        vault.add_item(item);
+
+        let json = vault.to_json().expect("serialise should succeed");
+        let restored = Vault::from_json(&json).expect("deserialise should succeed");
+
+        assert_eq!(restored.list_items().len(), 1);
+        assert_eq!(restored.get_item(id).unwrap().name, "GitHub");
+        assert_eq!(
+            restored.get_item(id).unwrap().username.as_deref(),
+            Some("alice@example.com")
+        );
+    }
+
+    #[test]
+    fn from_json_invalid_bytes_returns_serialisation_error() {
+        let err = Vault::from_json(b"not json at all").unwrap_err();
+        assert!(
+            matches!(err, crate::Error::Serialisation(_)),
+            "expected Serialisation error, got {err:?}"
+        );
     }
 }

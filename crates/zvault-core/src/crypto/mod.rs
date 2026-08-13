@@ -68,10 +68,7 @@ use zeroize::Zeroizing;
 // all crypto operations in this module.
 use aes_gcm::aead::rand_core::RngCore as _;
 
-use crate::{
-    error::Error,
-    Result,
-};
+use crate::{error::Error, Result};
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -202,7 +199,12 @@ impl KdfParams {
                 .try_into()
                 .expect("infallible: 4-byte sub-slice of fixed [u8; 44]"),
         );
-        Self { salt, m_cost, t_cost, p_cost }
+        Self {
+            salt,
+            m_cost,
+            t_cost,
+            p_cost,
+        }
     }
 }
 
@@ -263,13 +265,8 @@ pub fn parse_kdf_params(blob: &[u8]) -> Result<KdfParams> {
 /// Returns [`Error::Crypto`] if the Argon2id computation fails (e.g. invalid
 /// cost parameters).
 pub fn derive_key(password: &str, params: &KdfParams) -> Result<VaultKey> {
-    let argon2_params = Argon2Params::new(
-        params.m_cost,
-        params.t_cost,
-        params.p_cost,
-        Some(32),
-    )
-    .map_err(|e| Error::Crypto(format!("invalid Argon2 params: {e}")))?;
+    let argon2_params = Argon2Params::new(params.m_cost, params.t_cost, params.p_cost, Some(32))
+        .map_err(|e| Error::Crypto(format!("invalid Argon2 params: {e}")))?;
 
     let argon2 = Argon2::new(
         argon2::Algorithm::Argon2id,
@@ -447,8 +444,18 @@ mod tests {
 
     #[test]
     fn derive_key_different_salts_produce_different_keys() {
-        let params_a = KdfParams { salt: [0u8; 32], m_cost: 8, t_cost: 1, p_cost: 1 };
-        let params_b = KdfParams { salt: [1u8; 32], m_cost: 8, t_cost: 1, p_cost: 1 };
+        let params_a = KdfParams {
+            salt: [0u8; 32],
+            m_cost: 8,
+            t_cost: 1,
+            p_cost: 1,
+        };
+        let params_b = KdfParams {
+            salt: [1u8; 32],
+            m_cost: 8,
+            t_cost: 1,
+            p_cost: 1,
+        };
         let k1 = derive_key("same-password", &params_a).unwrap();
         let k2 = derive_key("same-password", &params_b).unwrap();
         assert_ne!(k1.as_bytes(), k2.as_bytes());
@@ -457,7 +464,12 @@ mod tests {
     #[test]
     fn derive_key_is_deterministic() {
         // Same password + same params → same key every time.
-        let params = KdfParams { salt: [0xABu8; 32], m_cost: 8, t_cost: 1, p_cost: 1 };
+        let params = KdfParams {
+            salt: [0xABu8; 32],
+            m_cost: 8,
+            t_cost: 1,
+            p_cost: 1,
+        };
         let k1 = derive_key("deterministic", &params).unwrap();
         let k2 = derive_key("deterministic", &params).unwrap();
         assert_eq!(k1.as_bytes(), k2.as_bytes());
@@ -466,7 +478,12 @@ mod tests {
     #[test]
     fn derive_key_rejects_invalid_params() {
         // m_cost = 0 is invalid for Argon2.
-        let params = KdfParams { salt: [0u8; 32], m_cost: 0, t_cost: 1, p_cost: 1 };
+        let params = KdfParams {
+            salt: [0u8; 32],
+            m_cost: 0,
+            t_cost: 1,
+            p_cost: 1,
+        };
         assert!(derive_key("pw", &params).is_err());
     }
 
@@ -529,10 +546,7 @@ mod tests {
         let key_bad = test_key("wrong-password");
         let blob = encrypt(&key_good, b"secret data").unwrap();
         let result = decrypt(&key_bad, &blob);
-        assert!(
-            result.is_err(),
-            "decrypting with wrong key should fail"
-        );
+        assert!(result.is_err(), "decrypting with wrong key should fail");
     }
 
     // ── Tampered ciphertext ──────────────────────────────────────────────────
@@ -556,7 +570,10 @@ mod tests {
         // Flip a byte in the KDF params region of the header (part of AAD).
         blob[MAGIC.len() + 1] ^= 0x01;
         let result = decrypt(&key, &blob);
-        assert!(result.is_err(), "GCM tag should catch header (AAD) tampering");
+        assert!(
+            result.is_err(),
+            "GCM tag should catch header (AAD) tampering"
+        );
     }
 
     #[test]

@@ -41,3 +41,4 @@ tracing      = { workspace = true }
 [dev-dependencies]
 proptest     = { workspace = true }
 tokio        = { workspace = true }
+tempfile     = "3"

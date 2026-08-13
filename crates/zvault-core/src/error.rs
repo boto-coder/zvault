@@ -26,6 +26,10 @@ pub enum Error {
     #[error("invalid vault file: {0}")]
     InvalidVaultFile(String),
 
+    /// A vault item with the given ID was not found.
+    #[error("item not found: {0}")]
+    ItemNotFound(Uuid),
+
     /// The referenced device ID is not in the authorised device list.
     #[error("device not found: {0}")]
     DeviceNotFound(Uuid),
