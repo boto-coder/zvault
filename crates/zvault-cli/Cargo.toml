@@ -15,10 +15,8 @@ path = "src/main.rs"
 [dependencies]
 zvault-core  = { path = "../zvault-core" }
 anyhow       = { workspace = true }
-thiserror    = { workspace = true }
-tokio        = { workspace = true }
-tracing      = { workspace = true }
-tracing-subscriber = { workspace = true }
-serde_json   = { workspace = true }
 clap         = { version = "4.5.39", features = ["derive", "env"] }
-rpassword    = { version = "7.4.0" }
+rpassword    = "7.4.0"
+serde_json   = { workspace = true }
+uuid         = { workspace = true }
+chrono       = { workspace = true }

@@ -1,7 +1,15 @@
+//! ZVault CLI — command-line interface for the ZVault password manager.
+//!
+//! Each subcommand opens the vault, performs an operation, saves if needed,
+//! and closes. There is no persistent REPL; each invocation is stateless.
+
+use std::io::{self, Write};
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use uuid::Uuid;
+use zvault_core::vault::{ItemKind, VaultFile, VaultItem};
 
 // ─── CLI definition ──────────────────────────────────────────────────────────
 
@@ -13,237 +21,1116 @@ struct Cli {
     command: Commands,
 }
 
+/// Export format selector for the `export` subcommand.
+#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+pub enum ExportFormat {
+    /// JSON export (plaintext).
+    Json,
+    /// CSV export (plaintext).
+    Csv,
+    /// Encrypted `.zvault-export` backup.
+    ZvaultExport,
+}
+
 /// Import format selector for the `import` subcommand.
-#[derive(clap::ValueEnum, Debug, Clone)]
+#[derive(clap::ValueEnum, Debug, Clone, Copy)]
 pub enum ImportFormat {
     /// Bitwarden JSON export.
     Bitwarden,
-    /// 1Password 1PUX export.
-    OnePassword,
-    /// LastPass CSV export.
-    Lastpass,
-    /// KeePass KDBX / XML export.
-    Keepass,
-    /// Generic CSV with configurable column mapping.
+    /// Generic CSV with columns: name, username, password, url, notes.
     Csv,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Unlock a vault and start a session.
-    Unlock {
-        /// Path to the vault file.
-        vault: PathBuf,
-        /// Master password. Falls back to interactive prompt if not set.
-        #[arg(long, env = "ZVAULT_PASSWORD", hide_env_values = true)]
-        password: Option<String>,
+    /// Create a new vault file.
+    Init {
+        /// Path for the new vault file.
+        path: PathBuf,
     },
 
-    /// Lock the active session for a vault.
-    Lock {
+    /// Unlock a vault (verify password).
+    Unlock {
         /// Path to the vault file.
-        vault: PathBuf,
+        path: PathBuf,
     },
+
+    /// Lock the current session (no-op in stateless mode; placeholder).
+    Lock,
 
     /// List all items in the vault.
     List {
         /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
         vault: PathBuf,
-        /// Output as JSON.
+        /// Show passwords in output.
         #[arg(long)]
-        json: bool,
+        show_password: bool,
     },
 
     /// Get a single vault item by ID.
     Get {
-        /// Path to the vault file.
-        vault: PathBuf,
         /// Item UUID.
         id: String,
-        /// Output as JSON.
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+        /// Show password in cleartext.
         #[arg(long)]
-        json: bool,
+        show_password: bool,
     },
 
-    /// Add a new vault item (interactive).
+    /// Add a new item to the vault (interactive).
     Add {
         /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
         vault: PathBuf,
     },
 
-    /// Edit an existing vault item (interactive).
+    /// Edit an existing vault item.
     Edit {
-        /// Path to the vault file.
-        vault: PathBuf,
         /// Item UUID.
         id: String,
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
     },
 
     /// Delete a vault item.
     Delete {
-        /// Path to the vault file.
-        vault: PathBuf,
         /// Item UUID.
         id: String,
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+        /// Skip confirmation prompt.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
-    /// List all authorised devices.
-    Devices {
+    /// Change the vault master password.
+    Rekey {
         /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
         vault: PathBuf,
-        /// Output as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Force an immediate Nostr sync.
-    Sync {
-        /// Path to the vault file.
-        vault: PathBuf,
-    },
-
-    /// Import credentials from another password manager.
-    Import {
-        /// Path to the vault file.
-        vault: PathBuf,
-        /// Path to the import file.
-        file: PathBuf,
-        /// Source format.
-        #[arg(long, value_enum)]
-        format: ImportFormat,
     },
 
     /// Export the vault.
     Export {
         /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
         vault: PathBuf,
-        /// Output path for the export file.
+        /// Export format.
+        #[arg(long, value_enum)]
+        format: ExportFormat,
+        /// Output file path.
+        #[arg(long, short)]
         output: PathBuf,
-        /// Write a plaintext export instead of encrypted `.zvault-export`.
-        /// WARNING: plaintext exports are written to disk unencrypted.
-        #[arg(long)]
-        plaintext: bool,
     },
 
-    /// View the audit log.
-    Audit {
+    /// Import items into the vault.
+    Import {
         /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
         vault: PathBuf,
-        /// Verify the HMAC chain integrity.
-        #[arg(long)]
-        verify: bool,
-        /// Output as JSON.
-        #[arg(long)]
-        json: bool,
+        /// Import format.
+        #[arg(long, value_enum)]
+        format: ImportFormat,
+        /// Input file path.
+        #[arg(long, short)]
+        input: PathBuf,
+    },
+
+    /// List all devices admitted to the vault.
+    Devices {
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+    },
+
+    /// Device management subcommands.
+    Device {
+        #[command(subcommand)]
+        action: DeviceAction,
     },
 }
 
-// ─── Command stubs ───────────────────────────────────────────────────────────
+#[derive(Subcommand, Debug)]
+enum DeviceAction {
+    /// Admit a new device to the vault.
+    Admit {
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+        /// Label for the new device (e.g. "Alice's MacBook").
+        #[arg(long)]
+        label: String,
+    },
 
-async fn cmd_unlock(vault: PathBuf, password: Option<String>) -> Result<()> {
-    let _ = (vault, password);
-    eprintln!("not yet implemented");
+    /// Revoke a device from the vault.
+    Revoke {
+        /// Device UUID to revoke.
+        id: String,
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+    },
+}
+
+// ─── Password helpers ────────────────────────────────────────────────────────
+
+/// Get the master password from environment or interactive prompt.
+fn get_password(prompt: &str) -> Result<String> {
+    // Check ZVAULT_PASSWORD env var first (for CI/scripting).
+    if let Ok(pw) = std::env::var("ZVAULT_PASSWORD") {
+        if !pw.is_empty() {
+            return Ok(pw);
+        }
+    }
+    rpassword::prompt_password(prompt).context("failed to read password")
+}
+
+/// Get a new password with confirmation.
+fn get_new_password(prompt: &str) -> Result<String> {
+    if let Ok(pw) = std::env::var("ZVAULT_PASSWORD") {
+        if !pw.is_empty() {
+            return Ok(pw);
+        }
+    }
+    let pw = rpassword::prompt_password(prompt).context("failed to read password")?;
+    let confirm =
+        rpassword::prompt_password("Confirm password: ").context("failed to read confirmation")?;
+    if pw != confirm {
+        bail!("passwords do not match");
+    }
+    Ok(pw)
+}
+
+/// Prompt for a single line of input (with a message).
+fn prompt_line(msg: &str) -> Result<String> {
+    print!("{msg}");
+    io::stdout().flush()?;
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
+    Ok(line.trim().to_string())
+}
+
+/// Prompt for an optional field (returns None if empty).
+fn prompt_optional(msg: &str) -> Result<Option<String>> {
+    let val = prompt_line(msg)?;
+    if val.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(val))
+    }
+}
+
+// ─── Display helpers ─────────────────────────────────────────────────────────
+
+fn kind_label(kind: &ItemKind) -> &'static str {
+    match kind {
+        ItemKind::Login => "Login",
+        ItemKind::SecureNote => "SecureNote",
+        ItemKind::Card => "Card",
+        ItemKind::Identity => "Identity",
+    }
+}
+
+fn display_item(item: &VaultItem, show_password: bool) {
+    println!("  ID:       {}", item.id);
+    println!("  Name:     {}", item.name);
+    println!("  Kind:     {}", kind_label(&item.kind));
+    println!(
+        "  Created:  {}",
+        item.created_at.format("%Y-%m-%d %H:%M:%S UTC")
+    );
+    println!(
+        "  Updated:  {}",
+        item.updated_at.format("%Y-%m-%d %H:%M:%S UTC")
+    );
+
+    match &item.kind {
+        ItemKind::Login => {
+            if let Some(username) = &item.username {
+                println!("  Username: {username}");
+            }
+            if show_password {
+                if let Some(password) = &item.password {
+                    println!("  Password: {password}");
+                }
+            } else if item.password.is_some() {
+                println!("  Password: ********");
+            }
+            if let Some(totp) = &item.totp_secret {
+                if show_password {
+                    println!("  TOTP:     {totp}");
+                } else {
+                    println!("  TOTP:     ********");
+                }
+            }
+            if !item.uris.is_empty() {
+                println!("  URIs:");
+                for uri in &item.uris {
+                    println!("    - {}", uri.uri);
+                }
+            }
+        }
+        ItemKind::SecureNote => {
+            if let Some(note) = &item.note {
+                if show_password {
+                    println!("  Note:     {note}");
+                } else {
+                    println!("  Note:     [hidden]");
+                }
+            }
+        }
+        ItemKind::Card => {
+            if let Some(cardholder) = &item.cardholder {
+                println!("  Holder:   {cardholder}");
+            }
+            if show_password {
+                if let Some(number) = &item.card_number {
+                    println!("  Number:   {number}");
+                }
+                if let Some(cvv) = &item.cvv {
+                    println!("  CVV:      {cvv}");
+                }
+            } else {
+                if item.card_number.is_some() {
+                    println!("  Number:   ****");
+                }
+                if item.cvv.is_some() {
+                    println!("  CVV:      ***");
+                }
+            }
+            if let Some(expiry) = &item.expiry {
+                println!("  Expiry:   {expiry}");
+            }
+        }
+        ItemKind::Identity => {
+            if let Some(id_fields) = &item.identity {
+                if let Some(v) = &id_fields.first_name {
+                    println!("  First:    {v}");
+                }
+                if let Some(v) = &id_fields.last_name {
+                    println!("  Last:     {v}");
+                }
+                if let Some(v) = &id_fields.email {
+                    println!("  Email:    {v}");
+                }
+                if let Some(v) = &id_fields.phone {
+                    println!("  Phone:    {v}");
+                }
+                if let Some(v) = &id_fields.address {
+                    println!("  Address:  {v}");
+                }
+                if let Some(v) = &id_fields.city {
+                    println!("  City:     {v}");
+                }
+                if let Some(v) = &id_fields.country {
+                    println!("  Country:  {v}");
+                }
+            }
+        }
+    }
+}
+
+// ─── Command implementations ─────────────────────────────────────────────────
+
+fn cmd_init(path: PathBuf) -> Result<()> {
+    if path.exists() {
+        bail!("file already exists: {}", path.display());
+    }
+
+    let password = get_new_password("Enter master password: ")?;
+    if password.is_empty() {
+        bail!("password cannot be empty");
+    }
+
+    let (_vf, _key) = VaultFile::create(&password, &path).context("failed to create vault file")?;
+
+    println!("✓ Vault created at {}", path.display());
     Ok(())
 }
 
-async fn cmd_lock(vault: PathBuf) -> Result<()> {
-    let _ = vault;
-    eprintln!("not yet implemented");
+fn cmd_unlock(path: PathBuf) -> Result<()> {
+    if !path.exists() {
+        bail!("vault file not found: {}", path.display());
+    }
+
+    let password = get_password("Enter master password: ")?;
+    let (_vf, _key, vault) =
+        VaultFile::open(&password, &path).context("failed to unlock vault (wrong password?)")?;
+
+    println!("✓ Vault unlocked successfully");
+    println!("  Items: {}", vault.items.len());
+    println!("  Devices: {}", vault.devices.len());
+    println!("  Version: {}", vault.version);
     Ok(())
 }
 
-async fn cmd_list(vault: PathBuf, json: bool) -> Result<()> {
-    let _ = (vault, json);
-    eprintln!("not yet implemented");
+fn cmd_lock() -> Result<()> {
+    // In stateless mode, there is no persistent session to lock.
+    // This command serves as a placeholder for future REPL mode.
+    println!("✓ Session locked (stateless mode — no active session)");
     Ok(())
 }
 
-async fn cmd_get(vault: PathBuf, id: String, json: bool) -> Result<()> {
-    let _ = (vault, id, json);
-    eprintln!("not yet implemented");
+fn cmd_list(vault_path: PathBuf, _show_password: bool) -> Result<()> {
+    let password = get_password("Enter master password: ")?;
+    let (_vf, _key, vault) =
+        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+
+    let items = vault.list_items();
+    if items.is_empty() {
+        println!("No items in vault.");
+        return Ok(());
+    }
+
+    println!("{:<38} {:<12} NAME", "ID", "KIND");
+    println!("{}", "-".repeat(70));
+    for item in items {
+        println!(
+            "{:<38} {:<12} {}",
+            item.id,
+            kind_label(&item.kind),
+            item.name
+        );
+    }
+    println!("\n{} item(s) total.", items.len());
     Ok(())
 }
 
-async fn cmd_add(vault: PathBuf) -> Result<()> {
-    let _ = vault;
-    eprintln!("not yet implemented");
+fn cmd_get(vault_path: PathBuf, id_str: String, show_password: bool) -> Result<()> {
+    let id = Uuid::parse_str(&id_str).context("invalid UUID format")?;
+    let password = get_password("Enter master password: ")?;
+    let (_vf, _key, vault) =
+        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+
+    match vault.get_item(id) {
+        Some(item) => {
+            display_item(item, show_password);
+        }
+        None => {
+            bail!("item not found: {id}");
+        }
+    }
     Ok(())
 }
 
-async fn cmd_edit(vault: PathBuf, id: String) -> Result<()> {
-    let _ = (vault, id);
-    eprintln!("not yet implemented");
+fn cmd_add(vault_path: PathBuf) -> Result<()> {
+    let password = get_password("Enter master password: ")?;
+    let (vf, key, mut vault) =
+        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+
+    // Prompt for item kind.
+    println!("Item types: login, note, card, identity");
+    let kind_str = prompt_line("Kind: ")?;
+    let kind = match kind_str.to_lowercase().as_str() {
+        "login" => ItemKind::Login,
+        "note" | "securenote" | "secure_note" => ItemKind::SecureNote,
+        "card" => ItemKind::Card,
+        "identity" => ItemKind::Identity,
+        _ => bail!("unknown item kind: {kind_str}. Use: login, note, card, identity"),
+    };
+
+    let name = prompt_line("Name: ")?;
+    if name.is_empty() {
+        bail!("name cannot be empty");
+    }
+
+    let mut item = VaultItem::new(kind.clone(), &name);
+
+    match kind {
+        ItemKind::Login => {
+            item.username = prompt_optional("Username (optional): ")?;
+            item.password = prompt_optional("Password (optional): ")?;
+            item.totp_secret = prompt_optional("TOTP secret (optional): ")?;
+            if let Some(uri) = prompt_optional("URI (optional): ")? {
+                item.uris.push(zvault_core::vault::Uri {
+                    uri,
+                    r#match: zvault_core::vault::UriMatch::Domain,
+                });
+            }
+        }
+        ItemKind::SecureNote => {
+            item.note = prompt_optional("Note: ")?;
+        }
+        ItemKind::Card => {
+            item.cardholder = prompt_optional("Cardholder name (optional): ")?;
+            item.card_number = prompt_optional("Card number (optional): ")?;
+            item.expiry = prompt_optional("Expiry MM/YY (optional): ")?;
+            item.cvv = prompt_optional("CVV (optional): ")?;
+        }
+        ItemKind::Identity => {
+            let fields = zvault_core::vault::IdentityFields {
+                first_name: prompt_optional("First name (optional): ")?,
+                last_name: prompt_optional("Last name (optional): ")?,
+                email: prompt_optional("Email (optional): ")?,
+                phone: prompt_optional("Phone (optional): ")?,
+                address: prompt_optional("Address (optional): ")?,
+                city: prompt_optional("City (optional): ")?,
+                country: prompt_optional("Country (optional): ")?,
+            };
+            item.identity = Some(fields);
+        }
+    }
+
+    let id = item.id;
+    vault.add_item(item);
+    vf.save(&key, &vault).context("failed to save vault")?;
+
+    println!("✓ Item added: {id}");
     Ok(())
 }
 
-async fn cmd_delete(vault: PathBuf, id: String) -> Result<()> {
-    let _ = (vault, id);
-    eprintln!("not yet implemented");
+fn cmd_edit(vault_path: PathBuf, id_str: String) -> Result<()> {
+    let id = Uuid::parse_str(&id_str).context("invalid UUID format")?;
+    let password = get_password("Enter master password: ")?;
+    let (vf, key, mut vault) =
+        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+
+    let existing = vault
+        .get_item(id)
+        .ok_or_else(|| anyhow::anyhow!("item not found: {id}"))?
+        .clone();
+
+    println!(
+        "Editing item: {} ({})",
+        existing.name,
+        kind_label(&existing.kind)
+    );
+    println!("Press Enter to keep current value.");
+
+    let mut updated = existing.clone();
+    updated.updated_at = chrono::Utc::now();
+
+    // Name
+    let new_name = prompt_line(&format!("Name [{}]: ", existing.name))?;
+    if !new_name.is_empty() {
+        updated.name = new_name;
+    }
+
+    match &existing.kind {
+        ItemKind::Login => {
+            let current_user = existing.username.as_deref().unwrap_or("");
+            let new_user = prompt_line(&format!("Username [{current_user}]: "))?;
+            if !new_user.is_empty() {
+                updated.username = Some(new_user);
+            }
+
+            let new_pw = prompt_line("Password [********]: ")?;
+            if !new_pw.is_empty() {
+                updated.password = Some(new_pw);
+            }
+
+            let new_totp = prompt_line("TOTP secret [unchanged]: ")?;
+            if !new_totp.is_empty() {
+                updated.totp_secret = Some(new_totp);
+            }
+        }
+        ItemKind::SecureNote => {
+            let new_note = prompt_line("Note [unchanged]: ")?;
+            if !new_note.is_empty() {
+                updated.note = Some(new_note);
+            }
+        }
+        ItemKind::Card => {
+            let current_holder = existing.cardholder.as_deref().unwrap_or("");
+            let new_holder = prompt_line(&format!("Cardholder [{current_holder}]: "))?;
+            if !new_holder.is_empty() {
+                updated.cardholder = Some(new_holder);
+            }
+
+            let new_number = prompt_line("Card number [****]: ")?;
+            if !new_number.is_empty() {
+                updated.card_number = Some(new_number);
+            }
+
+            let current_expiry = existing.expiry.as_deref().unwrap_or("");
+            let new_expiry = prompt_line(&format!("Expiry [{current_expiry}]: "))?;
+            if !new_expiry.is_empty() {
+                updated.expiry = Some(new_expiry);
+            }
+
+            let new_cvv = prompt_line("CVV [***]: ")?;
+            if !new_cvv.is_empty() {
+                updated.cvv = Some(new_cvv);
+            }
+        }
+        ItemKind::Identity => {
+            let mut fields = existing.identity.clone().unwrap_or_default();
+            let current_first = fields.first_name.as_deref().unwrap_or("");
+            let new_first = prompt_line(&format!("First name [{current_first}]: "))?;
+            if !new_first.is_empty() {
+                fields.first_name = Some(new_first);
+            }
+
+            let current_last = fields.last_name.as_deref().unwrap_or("");
+            let new_last = prompt_line(&format!("Last name [{current_last}]: "))?;
+            if !new_last.is_empty() {
+                fields.last_name = Some(new_last);
+            }
+
+            let current_email = fields.email.as_deref().unwrap_or("");
+            let new_email = prompt_line(&format!("Email [{current_email}]: "))?;
+            if !new_email.is_empty() {
+                fields.email = Some(new_email);
+            }
+
+            let current_phone = fields.phone.as_deref().unwrap_or("");
+            let new_phone = prompt_line(&format!("Phone [{current_phone}]: "))?;
+            if !new_phone.is_empty() {
+                fields.phone = Some(new_phone);
+            }
+
+            let current_address = fields.address.as_deref().unwrap_or("");
+            let new_address = prompt_line(&format!("Address [{current_address}]: "))?;
+            if !new_address.is_empty() {
+                fields.address = Some(new_address);
+            }
+
+            let current_city = fields.city.as_deref().unwrap_or("");
+            let new_city = prompt_line(&format!("City [{current_city}]: "))?;
+            if !new_city.is_empty() {
+                fields.city = Some(new_city);
+            }
+
+            let current_country = fields.country.as_deref().unwrap_or("");
+            let new_country = prompt_line(&format!("Country [{current_country}]: "))?;
+            if !new_country.is_empty() {
+                fields.country = Some(new_country);
+            }
+
+            updated.identity = Some(fields);
+        }
+    }
+
+    vault
+        .update_item(updated)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    vf.save(&key, &vault).context("failed to save vault")?;
+
+    println!("✓ Item updated: {id}");
     Ok(())
 }
 
-async fn cmd_devices(vault: PathBuf, json: bool) -> Result<()> {
-    let _ = (vault, json);
-    eprintln!("not yet implemented");
+fn cmd_delete(vault_path: PathBuf, id_str: String, yes: bool) -> Result<()> {
+    let id = Uuid::parse_str(&id_str).context("invalid UUID format")?;
+    let password = get_password("Enter master password: ")?;
+    let (vf, key, mut vault) =
+        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+
+    // Verify item exists and show its name.
+    let item_name = vault
+        .get_item(id)
+        .ok_or_else(|| anyhow::anyhow!("item not found: {id}"))?
+        .name
+        .clone();
+
+    if !yes {
+        let answer = prompt_line(&format!("Delete \"{item_name}\" ({id})? [y/N]: "))?;
+        if !matches!(answer.to_lowercase().as_str(), "y" | "yes") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
+    vault.delete_item(id).map_err(|e| anyhow::anyhow!("{e}"))?;
+    vf.save(&key, &vault).context("failed to save vault")?;
+
+    println!("✓ Item deleted: {item_name} ({id})");
     Ok(())
 }
 
-async fn cmd_sync(vault: PathBuf) -> Result<()> {
-    let _ = vault;
-    eprintln!("not yet implemented");
+fn cmd_rekey(vault_path: PathBuf) -> Result<()> {
+    if !vault_path.exists() {
+        bail!("vault file not found: {}", vault_path.display());
+    }
+
+    let old_password = get_password("Enter current master password: ")?;
+    let new_password = get_new_password("Enter new master password: ")?;
+    if new_password.is_empty() {
+        bail!("new password cannot be empty");
+    }
+
+    // Open vault with old password to verify it first.
+    let (vf, _key, _vault) = VaultFile::open(&old_password, &vault_path)
+        .context("failed to unlock with current password")?;
+
+    // Rekey the vault file.
+    let (_new_vf, _new_key, _new_vault) = vf
+        .rekey(&old_password, &new_password)
+        .context("failed to rekey vault")?;
+
+    println!("✓ Master password changed successfully");
     Ok(())
 }
 
-async fn cmd_import(vault: PathBuf, file: PathBuf, format: ImportFormat) -> Result<()> {
-    let _ = (vault, file, format);
-    eprintln!("not yet implemented");
+fn cmd_export(vault_path: PathBuf, format: ExportFormat, output: PathBuf) -> Result<()> {
+    let password = get_password("Enter master password: ")?;
+    let (_vf, _key, vault) =
+        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+
+    match format {
+        ExportFormat::Json => {
+            let json = serde_json::to_string_pretty(&vault)
+                .context("failed to serialise vault to JSON")?;
+            std::fs::write(&output, json).context("failed to write export file")?;
+            println!(
+                "✓ Exported {} item(s) to {} (JSON)",
+                vault.items.len(),
+                output.display()
+            );
+        }
+        ExportFormat::Csv => {
+            let mut csv_output = String::new();
+            csv_output.push_str("name,kind,username,password,uri,notes\n");
+            for item in &vault.items {
+                let uri = item.uris.first().map(|u| u.uri.as_str()).unwrap_or("");
+                let username = item.username.as_deref().unwrap_or("");
+                let pw = item.password.as_deref().unwrap_or("");
+                let notes = item.note.as_deref().unwrap_or("");
+                // Escape CSV fields.
+                csv_output.push_str(&format!(
+                    "{},{},{},{},{},{}\n",
+                    csv_escape(&item.name),
+                    kind_label(&item.kind),
+                    csv_escape(username),
+                    csv_escape(pw),
+                    csv_escape(uri),
+                    csv_escape(notes),
+                ));
+            }
+            std::fs::write(&output, csv_output).context("failed to write export file")?;
+            println!(
+                "✓ Exported {} item(s) to {} (CSV)",
+                vault.items.len(),
+                output.display()
+            );
+        }
+        ExportFormat::ZvaultExport => {
+            // Encrypted export: create a new vault file at the output path.
+            let export_password = get_new_password("Enter export password: ")?;
+            if export_password.is_empty() {
+                bail!("export password cannot be empty");
+            }
+            let (vf_export, key_export) = VaultFile::create(&export_password, &output)
+                .context("failed to create export file")?;
+            // Save the full vault data into the export file.
+            vf_export
+                .save(&key_export, &vault)
+                .context("failed to write encrypted export")?;
+            println!(
+                "✓ Exported {} item(s) to {} (encrypted .zvault-export)",
+                vault.items.len(),
+                output.display()
+            );
+        }
+    }
     Ok(())
 }
 
-async fn cmd_export(vault: PathBuf, output: PathBuf, plaintext: bool) -> Result<()> {
-    let _ = (vault, output, plaintext);
-    eprintln!("not yet implemented");
+fn cmd_import(vault_path: PathBuf, format: ImportFormat, input: PathBuf) -> Result<()> {
+    let password = get_password("Enter master password: ")?;
+    let (vf, key, mut vault) =
+        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+
+    let content = std::fs::read_to_string(&input).context("failed to read import file")?;
+
+    let mut imported_count = 0;
+
+    match format {
+        ImportFormat::Bitwarden => {
+            // Parse Bitwarden JSON export.
+            let bw: serde_json::Value =
+                serde_json::from_str(&content).context("invalid Bitwarden JSON")?;
+            let items = bw
+                .get("items")
+                .and_then(|v| v.as_array())
+                .context("Bitwarden JSON missing 'items' array")?;
+
+            for bw_item in items {
+                let name = bw_item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Untitled");
+                let bw_type = bw_item.get("type").and_then(|v| v.as_u64()).unwrap_or(1);
+
+                let kind = match bw_type {
+                    1 => ItemKind::Login,
+                    2 => ItemKind::SecureNote,
+                    3 => ItemKind::Card,
+                    4 => ItemKind::Identity,
+                    _ => ItemKind::Login,
+                };
+
+                let mut item = VaultItem::new(kind.clone(), name);
+
+                match kind {
+                    ItemKind::Login => {
+                        if let Some(login) = bw_item.get("login") {
+                            item.username = login
+                                .get("username")
+                                .and_then(|v| v.as_str())
+                                .map(String::from);
+                            item.password = login
+                                .get("password")
+                                .and_then(|v| v.as_str())
+                                .map(String::from);
+                            item.totp_secret =
+                                login.get("totp").and_then(|v| v.as_str()).map(String::from);
+                            if let Some(uris) = login.get("uris").and_then(|v| v.as_array()) {
+                                for u in uris {
+                                    if let Some(uri_str) = u.get("uri").and_then(|v| v.as_str()) {
+                                        item.uris.push(zvault_core::vault::Uri {
+                                            uri: uri_str.to_string(),
+                                            r#match: zvault_core::vault::UriMatch::Domain,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ItemKind::SecureNote => {
+                        item.note = bw_item
+                            .get("notes")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
+                    }
+                    ItemKind::Card => {
+                        if let Some(card) = bw_item.get("card") {
+                            item.cardholder = card
+                                .get("cardholderName")
+                                .and_then(|v| v.as_str())
+                                .map(String::from);
+                            item.card_number = card
+                                .get("number")
+                                .and_then(|v| v.as_str())
+                                .map(String::from);
+                            item.cvv = card.get("code").and_then(|v| v.as_str()).map(String::from);
+                            let exp_month =
+                                card.get("expMonth").and_then(|v| v.as_str()).unwrap_or("");
+                            let exp_year =
+                                card.get("expYear").and_then(|v| v.as_str()).unwrap_or("");
+                            if !exp_month.is_empty() || !exp_year.is_empty() {
+                                item.expiry = Some(format!("{exp_month}/{exp_year}"));
+                            }
+                        }
+                    }
+                    ItemKind::Identity => {
+                        if let Some(ident) = bw_item.get("identity") {
+                            let fields = zvault_core::vault::IdentityFields {
+                                first_name: ident
+                                    .get("firstName")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from),
+                                last_name: ident
+                                    .get("lastName")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from),
+                                email: ident
+                                    .get("email")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from),
+                                phone: ident
+                                    .get("phone")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from),
+                                address: ident
+                                    .get("address1")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from),
+                                city: ident.get("city").and_then(|v| v.as_str()).map(String::from),
+                                country: ident
+                                    .get("country")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from),
+                            };
+                            item.identity = Some(fields);
+                        }
+                    }
+                }
+
+                // Also carry over notes field for non-SecureNote items.
+                if !matches!(kind, ItemKind::SecureNote) && item.note.is_none() {
+                    item.note = bw_item
+                        .get("notes")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                }
+
+                vault.add_item(item);
+                imported_count += 1;
+            }
+        }
+        ImportFormat::Csv => {
+            // Parse CSV: name,username,password,url,notes
+            let mut lines = content.lines();
+            // Skip header line.
+            let _header = lines.next();
+
+            for line in lines {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let fields = parse_csv_line(line);
+                let name = fields.first().map(|s| s.as_str()).unwrap_or("Untitled");
+                if name.is_empty() {
+                    continue;
+                }
+
+                let mut item = VaultItem::new(ItemKind::Login, name);
+                if let Some(username) = fields.get(1) {
+                    if !username.is_empty() {
+                        item.username = Some(username.clone());
+                    }
+                }
+                if let Some(pw) = fields.get(2) {
+                    if !pw.is_empty() {
+                        item.password = Some(pw.clone());
+                    }
+                }
+                if let Some(url) = fields.get(3) {
+                    if !url.is_empty() {
+                        item.uris.push(zvault_core::vault::Uri {
+                            uri: url.clone(),
+                            r#match: zvault_core::vault::UriMatch::Domain,
+                        });
+                    }
+                }
+                if let Some(notes) = fields.get(4) {
+                    if !notes.is_empty() {
+                        item.note = Some(notes.clone());
+                    }
+                }
+
+                vault.add_item(item);
+                imported_count += 1;
+            }
+        }
+    }
+
+    vf.save(&key, &vault).context("failed to save vault")?;
+    println!(
+        "✓ Imported {imported_count} item(s) from {}",
+        input.display()
+    );
     Ok(())
 }
 
-async fn cmd_audit(vault: PathBuf, verify: bool, json: bool) -> Result<()> {
-    let _ = (vault, verify, json);
-    eprintln!("not yet implemented");
+fn cmd_devices(vault_path: PathBuf) -> Result<()> {
+    let password = get_password("Enter master password: ")?;
+    let (_vf, _key, vault) =
+        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+
+    if vault.devices.is_empty() {
+        println!("No devices registered.");
+        return Ok(());
+    }
+
+    println!("{:<38} {:<20} {:<10} ADDED", "DEVICE ID", "LABEL", "STATUS");
+    println!("{}", "-".repeat(80));
+    for device in &vault.devices {
+        let status = if device.revoked { "revoked" } else { "active" };
+        println!(
+            "{:<38} {:<20} {:<10} {}",
+            device.device_id,
+            device.label,
+            status,
+            device.added_at.format("%Y-%m-%d")
+        );
+    }
+    println!("\n{} device(s) total.", vault.devices.len());
     Ok(())
+}
+
+fn cmd_device_admit(vault_path: PathBuf, label: String) -> Result<()> {
+    let password = get_password("Enter master password: ")?;
+    let (vf, key, mut vault) =
+        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+
+    let now = chrono::Utc::now();
+    let device_id = Uuid::new_v4();
+    // Generate a placeholder pubkey (in a full implementation this would use
+    // SecureStorage and DeviceIdentity::generate, but the CLI operates without
+    // a secure storage backend — we create the entry directly).
+    let entry = zvault_core::vault::DeviceEntry {
+        device_id,
+        nostr_pubkey: format!("{:0>64x}", device_id.as_u128()),
+        label: label.clone(),
+        added_at: now,
+        added_by: vault
+            .devices
+            .first()
+            .map(|d| d.device_id)
+            .unwrap_or(device_id),
+        revoked: false,
+        revoked_at: None,
+        revoked_by: None,
+    };
+
+    vault.devices.push(entry);
+    vault.version += 1;
+    vault.updated_at = now;
+    vf.save(&key, &vault).context("failed to save vault")?;
+
+    println!("✓ Device admitted: {label} ({device_id})");
+    Ok(())
+}
+
+fn cmd_device_revoke(vault_path: PathBuf, id_str: String) -> Result<()> {
+    let id = Uuid::parse_str(&id_str).context("invalid UUID format")?;
+    let password = get_password("Enter master password: ")?;
+    let (vf, key, mut vault) =
+        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+
+    let entry = vault
+        .devices
+        .iter_mut()
+        .find(|d| d.device_id == id)
+        .ok_or_else(|| anyhow::anyhow!("device not found: {id}"))?;
+
+    if entry.revoked {
+        bail!("device already revoked: {id}");
+    }
+
+    let label = entry.label.clone();
+    entry.revoked = true;
+    entry.revoked_at = Some(chrono::Utc::now());
+    // revoked_by would be set to the current device identity in a full
+    // implementation with SecureStorage. Here we leave it as None.
+
+    vault.version += 1;
+    vault.updated_at = chrono::Utc::now();
+    vf.save(&key, &vault).context("failed to save vault")?;
+
+    println!("✓ Device revoked: {label} ({id})");
+    Ok(())
+}
+
+// ─── CSV helpers ─────────────────────────────────────────────────────────────
+
+/// Escape a CSV field (wrap in quotes if it contains comma, quote, or newline).
+fn csv_escape(field: &str) -> String {
+    if field.contains(',') || field.contains('"') || field.contains('\n') {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
+}
+
+/// Parse a single CSV line respecting quoted fields.
+fn parse_csv_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if in_quotes => {
+                // Check for escaped quote ("").
+                if chars.peek() == Some(&'"') {
+                    current.push('"');
+                    chars.next();
+                } else {
+                    in_quotes = false;
+                }
+            }
+            '"' if !in_quotes && current.is_empty() => {
+                in_quotes = true;
+            }
+            ',' if !in_quotes => {
+                fields.push(current.clone());
+                current.clear();
+            }
+            _ => {
+                current.push(ch);
+            }
+        }
+    }
+    fields.push(current);
+    fields
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
-
+fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Unlock { vault, password } => cmd_unlock(vault, password).await,
-        Commands::Lock { vault } => cmd_lock(vault).await,
-        Commands::List { vault, json } => cmd_list(vault, json).await,
-        Commands::Get { vault, id, json } => cmd_get(vault, id, json).await,
-        Commands::Add { vault } => cmd_add(vault).await,
-        Commands::Edit { vault, id } => cmd_edit(vault, id).await,
-        Commands::Delete { vault, id } => cmd_delete(vault, id).await,
-        Commands::Devices { vault, json } => cmd_devices(vault, json).await,
-        Commands::Sync { vault } => cmd_sync(vault).await,
-        Commands::Import {
+        Commands::Init { path } => cmd_init(path),
+        Commands::Unlock { path } => cmd_unlock(path),
+        Commands::Lock => cmd_lock(),
+        Commands::List {
             vault,
-            file,
-            format,
-        } => cmd_import(vault, file, format).await,
+            show_password,
+        } => cmd_list(vault, show_password),
+        Commands::Get {
+            vault,
+            id,
+            show_password,
+        } => cmd_get(vault, id, show_password),
+        Commands::Add { vault } => cmd_add(vault),
+        Commands::Edit { vault, id } => cmd_edit(vault, id),
+        Commands::Delete { vault, id, yes } => cmd_delete(vault, id, yes),
+        Commands::Rekey { vault } => cmd_rekey(vault),
         Commands::Export {
             vault,
+            format,
             output,
-            plaintext,
-        } => cmd_export(vault, output, plaintext).await,
-        Commands::Audit {
+        } => cmd_export(vault, format, output),
+        Commands::Import {
             vault,
-            verify,
-            json,
-        } => cmd_audit(vault, verify, json).await,
+            format,
+            input,
+        } => cmd_import(vault, format, input),
+        Commands::Devices { vault } => cmd_devices(vault),
+        Commands::Device { action } => match action {
+            DeviceAction::Admit { vault, label } => cmd_device_admit(vault, label),
+            DeviceAction::Revoke { vault, id } => cmd_device_revoke(vault, id),
+        },
+    }
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn csv_escape_simple() {
+        assert_eq!(csv_escape("hello"), "hello");
+        assert_eq!(csv_escape("hello,world"), "\"hello,world\"");
+        assert_eq!(csv_escape("say \"hi\""), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn parse_csv_line_basic() {
+        let fields = parse_csv_line("name,user,pass,url,notes");
+        assert_eq!(fields, vec!["name", "user", "pass", "url", "notes"]);
+    }
+
+    #[test]
+    fn parse_csv_line_quoted() {
+        let fields = parse_csv_line("\"hello,world\",simple,\"has \"\"quotes\"\"\"");
+        assert_eq!(fields, vec!["hello,world", "simple", "has \"quotes\""]);
+    }
+
+    #[test]
+    fn parse_csv_line_empty_fields() {
+        let fields = parse_csv_line("a,,c,");
+        assert_eq!(fields, vec!["a", "", "c", ""]);
+    }
+
+    #[test]
+    fn kind_label_all_variants() {
+        assert_eq!(kind_label(&ItemKind::Login), "Login");
+        assert_eq!(kind_label(&ItemKind::SecureNote), "SecureNote");
+        assert_eq!(kind_label(&ItemKind::Card), "Card");
+        assert_eq!(kind_label(&ItemKind::Identity), "Identity");
     }
 }
