@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/zvault-core",
     "crates/zvault-cli",
+    "bindings/uniffi",
 ]
 
 [workspace.package]

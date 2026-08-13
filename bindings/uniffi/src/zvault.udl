@@ -1,0 +1,38 @@
+namespace zvault {
+  // Vault operations
+  [Throws=ZVaultError]
+  VaultHandle create_vault(string password, string path);
+
+  [Throws=ZVaultError]
+  VaultHandle open_vault(string password, string path);
+
+  [Throws=ZVaultError]
+  void save_vault([ByRef] VaultHandle handle);
+
+  // Item CRUD
+  [Throws=ZVaultError]
+  string list_items([ByRef] VaultHandle handle);
+
+  [Throws=ZVaultError]
+  string get_item([ByRef] VaultHandle handle, string item_id);
+
+  [Throws=ZVaultError]
+  void add_item([ByRef] VaultHandle handle, string item_json);
+
+  [Throws=ZVaultError]
+  void delete_item([ByRef] VaultHandle handle, string item_id);
+};
+
+[Error]
+enum ZVaultError {
+  "CryptoError",
+  "IoError",
+  "SerialisationError",
+  "InvalidVaultFile",
+  "ItemNotFound",
+  "InvalidInput",
+};
+
+dictionary VaultHandle {
+  u64 id;
+};

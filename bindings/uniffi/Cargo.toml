@@ -1,0 +1,23 @@
+[package]
+name        = "zvault-uniffi"
+description = "UniFFI bindings for zvault-core — generates Kotlin/Swift foreign-language bindings"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name       = "zvault_uniffi"
+
+[dependencies]
+zvault-core = { path = "../../crates/zvault-core", features = ["test-helpers"] }
+uniffi      = { version = "0.28.3" }
+uuid        = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+
+[build-dependencies]
+uniffi = { version = "0.28.3", features = ["build"] }
