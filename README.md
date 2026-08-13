@@ -27,10 +27,10 @@ ZVault is a privacy-focused secrets manager inspired by Bitwarden. It stores you
 
 | Platform | Status |
 |---|---|
-| Desktop (macOS / Windows / Linux) | Tauri v2 — Phase 2 |
-| Browser extension (Chrome / Firefox / Safari) | WXT — Phase 3 |
-| Android | Kotlin / Jetpack Compose + UniFFI — Phase 3 |
-| CLI (`zvault`) | Rust / clap — Phase 3 |
+| Desktop (macOS / Windows / Linux) | ✅ Tauri v2 |
+| Browser extension (Chrome / Firefox / Safari) | ✅ WXT |
+| Android | ✅ Kotlin / Jetpack Compose + UniFFI |
+| CLI (`zvault`) | ✅ Rust / clap |
 
 ---
 
@@ -55,6 +55,8 @@ cargo build --workspace
 cargo test --workspace --all-features
 ```
 
+Integration tests exercise the full sync protocol stack end-to-end (multi-device sync, revocation, NIP-59 gift-wrap) without network I/O. See `crates/zvault-core/tests/two_device_sync.rs`.
+
 ### Lint / format
 
 ```bash
@@ -67,6 +69,93 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```bash
 cargo audit
 ```
+
+---
+
+## Usage
+
+### CLI
+
+```bash
+# Create a new vault
+zvault init ~/my.zvault
+
+# Add a login
+zvault add --path ~/my.zvault
+
+# List items
+zvault list --path ~/my.zvault
+
+# Get item (shows password)
+zvault get <item-id> --show-password --path ~/my.zvault
+
+# Export to JSON
+zvault export --format json --output backup.json --path ~/my.zvault
+
+# Import from Bitwarden
+zvault import --format bitwarden --input export.json --path ~/my.zvault
+```
+
+The CLI reads the vault password from an interactive prompt by default. Set `ZVAULT_PASSWORD` for non-interactive/scripting usage.
+
+---
+
+## Desktop App
+
+The desktop app is built with **Tauri v2** (Rust backend + React/TypeScript frontend). It provides a full-featured GUI for vault management with:
+
+- Vault create, unlock, lock, and re-key
+- Full CRUD on vault items (logins, secure notes, cards, identities)
+- Biometric unlock via OS-native APIs (macOS Touch ID, Windows Hello, Linux libsecret)
+- Nostr sync configuration and device management
+- TOTP code generation with countdown timer
+- Auto-fill via accessibility APIs
+- Session lock after inactivity timeout
+
+To build and run:
+
+```bash
+cd apps/desktop
+npm install
+npm run tauri dev
+```
+
+---
+
+## Browser Extension
+
+The browser extension is built with **WXT** (Web Extension Tools) for cross-browser support:
+
+- **Chrome** (Manifest V3) and **Firefox** supported
+- **Safari** support via WXT's build target
+- Core cryptography runs in **WebAssembly** (`zvault-core` compiled via `wasm-pack`)
+- Auto-fill via content scripts — HTTPS-only, URI matching before injection
+- Optional native messaging bridge to the desktop app for keychain access
+- Session key held in memory only; vault data encrypted in `browser.storage.local`
+
+To build:
+
+```bash
+cd apps/extension
+npm install
+npm run dev        # development with hot reload
+npm run build      # production build
+```
+
+---
+
+## Android
+
+The Android app is built with **Kotlin + Jetpack Compose**, using **UniFFI** to generate Kotlin bindings from the Rust `zvault-core` library:
+
+- Native Rust crypto via auto-generated UniFFI bindings (no JNI boilerplate)
+- **Android Keystore API** for secure key storage
+- **BiometricPrompt** with Keystore biometric-bound key for fingerprint/face unlock
+- **AutofillService API** for system-wide credential auto-fill
+- **WorkManager** for background Nostr sync
+- Material 3 design with Jetpack Compose UI
+
+The native library is built with `cargo ndk` and linked via Gradle.
 
 ---
 
@@ -107,7 +196,7 @@ See [DESIGN.md](./DESIGN.md) for the full threat model, cryptographic design, an
 
 ## Development Status
 
-All core milestones (M0–M4, M7–M8, M11–M12) are complete. The `zvault-core` library is feature-complete and hardened with fuzz testing and property-based tests.
+All milestones (M0–M12) are complete. ZVault v1.0 is feature-complete and hardened with fuzz testing and property-based tests.
 
 | Milestone | Description | Status |
 |---|---|---|
@@ -116,12 +205,12 @@ All core milestones (M0–M4, M7–M8, M11–M12) are complete. The `zvault-core
 | M2 | Vault data model — CRUD, serialisation, on-disk format | ✅ Complete |
 | M3 | Device lifecycle — keypair, admit/revoke, CRDT | ✅ Complete |
 | M4 | Nostr sync — NIP-44/59, relay pub/sub, conflict resolution | ✅ Complete |
-| M5 | Desktop app shell — Tauri, React UI, vault CRUD | 🔲 Not started |
-| M6 | Biometric unlock — keychain, OS secure enclave | 🔲 Not started |
+| M5 | Desktop app shell — Tauri, React UI, vault CRUD | ✅ Complete |
+| M6 | Biometric unlock — keychain, OS secure enclave | ✅ Complete |
 | M7 | Import / Export — Bitwarden, CSV, `.zvault-export` | ✅ Complete |
 | M8 | Audit log — hash chain, storage, verification | ✅ Complete |
-| M9 | Browser extension — WXT, WASM core, auto-fill | 🔲 Not started |
-| M10 | Android app — UniFFI, Compose UI, Keystore | 🔲 Not started |
+| M9 | Browser extension — WXT, WASM core, auto-fill | ✅ Complete |
+| M10 | Android app — UniFFI, Compose UI, Keystore | ✅ Complete |
 | M11 | CLI tool — clap subcommands, scripting support | ✅ Complete |
 | M12 | Hardening & v1.0 — fuzz, proptest, docs, release | ✅ Complete |
 

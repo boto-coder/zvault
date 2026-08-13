@@ -322,3 +322,159 @@ The device secret key lives exclusively in `SecureStorage`, never in
 `#[cfg(any(test, feature = "test-helpers"))]`.  The `test-helpers` feature is
 declared in `Cargo.toml` so integration test crates can opt in without
 enabling it for production builds.
+
+
+---
+
+## M4 Design Decisions & Gotchas
+
+### NIP-44 message keys on stack — accepted risk
+
+**Finding (LOW):** The NIP-44 encryption implementation derives per-message
+keys (ChaCha20 key, ChaCha20 nonce, HMAC key) on the stack without wrapping
+them in `Zeroizing<_>`.
+
+**Rationale:** These keys are:
+1. Fresh per message — derived from HKDF-expand with a unique nonce each time.
+2. Short-lived — they exist only for the duration of a single `nip44_encrypt`
+   or `nip44_decrypt` call (microseconds).
+3. Not reusable — knowing a message key does not help derive other message keys
+   or the conversation key.
+
+Wrapping every intermediate 32-byte array in `Zeroizing` would add complexity
+with minimal security benefit given the ephemeral nature of these values.
+
+**Re-evaluate:** if the NIP-44 code is ever refactored to hold message keys
+across function boundaries (e.g. streaming encryption), they must be wrapped.
+
+---
+
+## M7 Design Decisions & Gotchas
+
+### CSV crate internal buffers — accepted risk
+
+**Finding (LOW):** The `csv` crate used for LastPass/generic CSV import
+maintains internal read buffers that may hold credential data (passwords,
+TOTP secrets) after parsing completes.  These buffers are not zeroed because
+they are owned by the `csv::Reader` and inaccessible to user code.
+
+**Rationale:**
+1. The CSV reader is dropped immediately after parsing — Rust's allocator will
+   reclaim the memory, but it is not guaranteed to be zeroed.
+2. The import path is a one-shot operation: the user imports once and the
+   process context (CLI) or Tauri command returns.  The window of exposure is
+   seconds at most.
+3. There is no API in the `csv` crate to force-zero internal buffers.
+
+**Mitigation:** Import operations use a scoped block so the `csv::Reader` is
+dropped as early as possible.  The imported `VaultItem` values are immediately
+encrypted into the vault file.
+
+**Re-evaluate:** if a `csv` crate version exposes a `clear()` or custom
+allocator hook, use it.
+
+---
+
+## M8 Design Decisions & Gotchas
+
+### Audit log tail truncation — accepted risk
+
+**Finding (LOW):** When the audit log exceeds the configured maximum entry
+count, older entries are truncated from the head of the log.  The truncation
+point breaks the hash chain: the first remaining entry's `prev_hash` refers
+to a truncated entry that is no longer available for verification.
+
+**Rationale:**
+1. Unbounded growth of the audit log is a DoS vector on disk-constrained
+   devices (Android, browser extension storage).
+2. The `verify_chain()` function accepts a `partial: bool` flag — when `true`,
+   it starts verification from the first available entry and reports the chain
+   as valid from that point forward.
+3. Full verification (from genesis) is available only if the log has never been
+   truncated.  This is documented in the `AuditLog::verify` return type which
+   distinguishes `FullyVerified` from `PartiallyVerified { from_index }`.
+
+**Mitigation:** The default max entry count (10,000) is generous for typical
+usage.  Users are warned in the UI when viewing a partially-verified log.
+
+**Re-evaluate:** if archival of old entries to a separate signed file is
+implemented (v2 feature).
+
+---
+
+## M11 Design Decisions & Gotchas
+
+### Password prompt_line not zeroed — accepted risk
+
+**Finding (LOW):** The `rpassword` crate used for interactive password input
+returns a `String`.  The CLI wraps this in `Zeroizing<String>` immediately,
+but `rpassword` internally allocates a buffer for the prompt line that is not
+zeroed after use.
+
+**Rationale:**
+1. The prompt line contains only the prompt text ("Enter vault password: "),
+   not the password itself.  The password characters are read into a separate
+   buffer that `rpassword` zeroes internally (verified in rpassword 5.x source).
+2. The exposure is the `String` returned by `rpassword::prompt_password` before
+   it is moved into `Zeroizing<String>` — this is a single stack frame with
+   no intervening allocations.
+
+**Mitigation:** The CLI does `let password = Zeroizing::new(rpassword::prompt_password(...)?);`
+— the `String` is moved (not copied) into `Zeroizing`, so no duplicate exists.
+
+**Re-evaluate:** M12 — verify that the `rpassword` version in use zeroes its
+internal buffer.  (Verified: rpassword 5.x uses `zeroize` internally.)
+
+---
+
+## Integration Test Architecture
+
+### `two_device_sync.rs`
+
+Location: `crates/zvault-core/tests/two_device_sync.rs`
+
+This integration test file exercises the complete sync protocol stack
+end-to-end, simulating real multi-device scenarios without network I/O.
+It is the primary correctness test for the sync and Nostr modules working
+together.
+
+**Test cases:**
+
+1. **`full_two_device_sync_cycle`** — The canonical happy path:
+   - Device A creates a vault, adds an item
+   - Device A admits Device B to the device list
+   - Device A builds and sends a full sync message to B
+   - Device B receives and applies the sync; verifies the item arrived
+   - Device A updates the item (password rotation)
+   - Device A sends a second sync to B
+   - Device B verifies the updated password
+   - A stale replay of the first message is correctly ignored (stale guard)
+
+2. **`revoked_device_sync_rejected`** — Security boundary test:
+   - Device A creates vault, admits B
+   - Device B builds a sync message containing a malicious item
+   - Device A revokes B
+   - Device A receives B's sync message → rejected (sender not in live devices)
+
+3. **`gift_wrap_sync_message_end_to_end`** — NIP-59 protocol layer:
+   - Verifies that a sync payload can be gift-wrapped and unwrapped
+   - Confirms the outer event uses an ephemeral key (not the sender's real key)
+
+4. **`three_device_sync_b_adds_item_invites_c`** — Mesh convergence:
+   - A creates vault + item, admits B, syncs to B
+   - B adds its own item, admits C, syncs to C
+   - C receives ALL items (from both A and B)
+   - B syncs back to A → A converges with full state
+
+5. **`full_nostr_protocol_sync_with_gift_wrap`** — Complete protocol stack:
+   - Exercises NIP-44 encrypt → NIP-01 sign → NIP-59 gift-wrap → relay delivery
+     → unwrap → decrypt → merge
+   - Verifies metadata hiding: relay sees only ciphertext + ephemeral key
+   - Confirms credentials (passwords, TOTP secrets) are never visible in the
+     outer event
+
+**Design rationale:** These tests use `InMemoryStorage` (via the `test-helpers`
+feature) and operate entirely in-memory.  No filesystem, no network, no relay.
+This makes them fast (< 1s total) and deterministic.  The `create_device`
+helper generates a full device identity (secp256k1 keypair, UUID, label) for
+each simulated device.

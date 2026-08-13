@@ -2,7 +2,7 @@
 
 ## Current status
 
-M0, M1, M2, and M3 complete. Starting M4.
+All milestones M0-M12 complete. Preparing for release.
 
 ## Milestone overview
 
@@ -48,13 +48,13 @@ M0, M1, M2, and M3 complete. Starting M4.
 - Vertical slices: each phase ships a working end-to-end slice
 - Security review at each milestone before proceeding
 
-## Current milestone: M5 — Desktop app shell
+## Current phase: Release preparation
 
-### M5 scope
-- Tauri v2 desktop app scaffold (React + TypeScript frontend)
-- Vault CRUD UI (create, unlock, lock, list items, add/edit/delete items)
-- SecureStorage implementation via `keyring` crate
-- Basic biometric unlock placeholder
+All milestones are complete. Current activities:
+- Final documentation review and update
+- README usage examples and platform sections
+- Steering docs aligned with delivered state
+- Preparing v1.0 release artefacts
 
 ## Completed milestones
 
