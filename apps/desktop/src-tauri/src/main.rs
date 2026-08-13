@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 use zvault_core::crypto::VaultKey;
 use zvault_core::vault::{ItemKind, Vault, VaultFile, VaultItem};
@@ -198,12 +199,13 @@ fn build_vault_item(input: &ItemInput) -> Result<VaultItem, String> {
 /// Create a new vault file at the given path.
 #[tauri::command]
 fn create_vault(
-    password: String,
+    mut password: String,
     path: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let (vault_file, key) =
-        VaultFile::create(&password, &path).map_err(|e| e.to_string())?;
+    let result = VaultFile::create(&password, &path).map_err(|e| e.to_string());
+    password.zeroize();
+    let (vault_file, key) = result?;
     let vault = Vault::new();
 
     let mut session = state.session.lock().map_err(|e| e.to_string())?;
@@ -219,12 +221,13 @@ fn create_vault(
 /// Open and decrypt an existing vault file.
 #[tauri::command]
 fn open_vault(
-    password: String,
+    mut password: String,
     path: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let (vault_file, key, vault) =
-        VaultFile::open(&password, &path).map_err(|e| e.to_string())?;
+    let result = VaultFile::open(&password, &path).map_err(|e| e.to_string());
+    password.zeroize();
+    let (vault_file, key, vault) = result?;
 
     let mut session = state.session.lock().map_err(|e| e.to_string())?;
     *session = Some(VaultSession {
@@ -397,17 +400,20 @@ fn list_devices(state: State<'_, AppState>) -> Result<Vec<DeviceSummary>, String
 /// Change the vault master password.
 #[tauri::command]
 fn rekey_vault(
-    old_password: String,
-    new_password: String,
+    mut old_password: String,
+    mut new_password: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let mut session = state.session.lock().map_err(|e| e.to_string())?;
     let current = session.as_ref().ok_or("Vault is locked")?;
 
-    let (new_vf, new_key, vault) = current
+    let result = current
         .vault_file
         .rekey(&old_password, &new_password)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string());
+    old_password.zeroize();
+    new_password.zeroize();
+    let (new_vf, new_key, vault) = result?;
 
     *session = Some(VaultSession {
         vault_file: new_vf,

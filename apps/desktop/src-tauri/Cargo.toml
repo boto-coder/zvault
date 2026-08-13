@@ -21,6 +21,9 @@ serde_json = "1.0"
 uuid = { version = "1.16", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
+# Zeroing of sensitive memory (password strings)
+zeroize = { version = "1.8", features = ["derive"] }
+
 # ZVault core library (path dependency)
 zvault-core = { path = "../../../crates/zvault-core", default-features = false }
 

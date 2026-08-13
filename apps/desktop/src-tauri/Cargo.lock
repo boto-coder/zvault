@@ -5439,5 +5439,6 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-shell",
  "uuid",
+ "zeroize",
  "zvault-core",
 ]
