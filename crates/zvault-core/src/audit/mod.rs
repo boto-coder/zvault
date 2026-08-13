@@ -160,13 +160,17 @@ pub fn derive_chain_key(vault_key: &VaultKey) -> Zeroizing<[u8; 32]> {
 
 /// Compute the HMAC-SHA256 for an audit entry.
 ///
-/// The message is: `seq_bytes(8) || timestamp_bytes || event_bytes || detail_bytes || prev_hmac(32)`
+/// The message is: `seq_bytes(8) || device_id(16) || timestamp_bytes || event_bytes || detail_bytes || prev_hmac(32)`
 ///
 /// Where `timestamp_bytes`, `event_bytes`, and `detail_bytes` are the UTF-8
 /// representation of the respective fields.
+///
+/// All variable-length fields are length-prefixed (4-byte LE length + data) to
+/// prevent cross-field collision attacks.
 fn compute_entry_hmac(
     chain_key: &[u8; 32],
     seq: u64,
+    device_id: &Uuid,
     timestamp: &DateTime<Utc>,
     event: &EventKind,
     detail: &str,
@@ -175,22 +179,34 @@ fn compute_entry_hmac(
     let mut mac =
         Hmac::<Sha256>::new_from_slice(chain_key).expect("infallible: HMAC accepts any key size");
 
-    // seq as 8 bytes little-endian
+    // seq as 8 bytes little-endian (fixed size)
     mac.update(&seq.to_le_bytes());
 
-    // timestamp as RFC 3339 string bytes
-    let ts_str = timestamp.to_rfc3339();
-    mac.update(ts_str.as_bytes());
+    // device_id as 16 bytes (fixed size UUID)
+    mac.update(device_id.as_bytes());
 
-    // event as JSON string bytes (deterministic serialisation)
+    // timestamp as length-prefixed RFC 3339 string bytes
+    let ts_str = timestamp.to_rfc3339();
+    let ts_bytes = ts_str.as_bytes();
+    #[allow(clippy::cast_possible_truncation)] // RFC3339 timestamp is always < 40 bytes
+    mac.update(&(ts_bytes.len() as u32).to_le_bytes());
+    mac.update(ts_bytes);
+
+    // event as length-prefixed JSON string bytes (deterministic serialisation)
     let event_str =
         serde_json::to_string(event).expect("infallible: EventKind serialisation cannot fail");
-    mac.update(event_str.as_bytes());
+    let event_bytes = event_str.as_bytes();
+    #[allow(clippy::cast_possible_truncation)] // EventKind JSON is always < 100 bytes
+    mac.update(&(event_bytes.len() as u32).to_le_bytes());
+    mac.update(event_bytes);
 
-    // detail as UTF-8 bytes
-    mac.update(detail.as_bytes());
+    // detail as length-prefixed UTF-8 bytes
+    let detail_bytes = detail.as_bytes();
+    #[allow(clippy::cast_possible_truncation)] // detail is a short human-readable string
+    mac.update(&(detail_bytes.len() as u32).to_le_bytes());
+    mac.update(detail_bytes);
 
-    // prev_hmac (32 bytes)
+    // prev_hmac (32 bytes, fixed size)
     mac.update(prev_hmac);
 
     let result = mac.finalize();
@@ -260,7 +276,9 @@ impl AuditLog {
         let seq = self.entries.len() as u64;
         let prev_hmac = self.entries.last().map_or(ZERO_HMAC, |prev| prev.hmac);
 
-        let hmac = compute_entry_hmac(chain_key, seq, &timestamp, &event, &detail, &prev_hmac);
+        let hmac = compute_entry_hmac(
+            chain_key, seq, &device_id, &timestamp, &event, &detail, &prev_hmac,
+        );
 
         self.entries.push(AuditEntry {
             seq,
@@ -300,6 +318,7 @@ impl AuditLog {
             let expected_hmac = compute_entry_hmac(
                 chain_key,
                 entry.seq,
+                &entry.device_id,
                 &entry.timestamp,
                 &entry.event,
                 &entry.detail,
@@ -920,5 +939,26 @@ mod tests {
 
         assert_eq!(log.len(), 100);
         assert!(log.verify_chain(&chain_key));
+    }
+
+    // ── Test 17: tamper detection — modified device_id ────────────────────────
+
+    #[test]
+    fn verify_chain_detects_tampered_device_id() {
+        let chain_key = test_chain_key();
+        let mut log = AuditLog::new();
+
+        log.append(
+            &chain_key,
+            Utc::now(),
+            test_device_id(),
+            EventKind::VaultUnlocked,
+            "Entry".to_string(),
+        );
+
+        // Tamper with the device_id
+        log.entries[0].device_id = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
+
+        assert!(!log.verify_chain(&chain_key));
     }
 }
