@@ -1,18 +1,21 @@
-name: Release
+name: Build All Artifacts
 
 on:
-  push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (branch, tag, or SHA)"
+        required: false
+        default: "main"
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── CLI binaries ────────────────────────────────────────────────────────────
+  # ── CLI binaries (all platforms) ────────────────────────────────────────────
   cli:
     name: CLI (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -33,6 +36,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -46,30 +51,32 @@ jobs:
         if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
-          STAGING="zvault-cli-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          STAGING="zvault-cli-${{ matrix.target }}"
           mkdir -p "$STAGING"
-          cp "target/${{ matrix.target }}/release/zvault-cli" "$STAGING/zvault"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            cp "target/${{ matrix.target }}/release/zvault-cli.exe" "$STAGING/zvault.exe"
+          else
+            cp "target/${{ matrix.target }}/release/zvault-cli" "$STAGING/zvault"
+          fi
           cp README.md LICENSE-MIT LICENSE-APACHE "$STAGING/"
           tar czf "$STAGING.tar.gz" "$STAGING"
-          echo "ASSET=$STAGING.tar.gz" >> "$GITHUB_ENV"
 
       - name: Package (zip)
         if: matrix.archive == 'zip'
         shell: bash
         run: |
-          STAGING="zvault-cli-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          STAGING="zvault-cli-${{ matrix.target }}"
           mkdir -p "$STAGING"
           cp "target/${{ matrix.target }}/release/zvault-cli.exe" "$STAGING/zvault.exe"
           cp README.md LICENSE-MIT LICENSE-APACHE "$STAGING/"
           7z a "$STAGING.zip" "$STAGING"
-          echo "ASSET=$STAGING.zip" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: release-cli-${{ matrix.target }}
-          path: ${{ env.ASSET }}
-          retention-days: 1
+          name: cli-${{ matrix.target }}
+          path: zvault-cli-${{ matrix.target }}.*
+          retention-days: 30
 
   # ── WASM package ────────────────────────────────────────────────────────────
   wasm:
@@ -78,6 +85,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Install Rust stable + wasm32 target
         uses: dtolnay/rust-toolchain@stable
@@ -90,18 +99,12 @@ jobs:
       - name: Build WASM
         run: cd crates/zvault-wasm && wasm-pack build --target web --release
 
-      - name: Package WASM
-        run: |
-          cd crates/zvault-wasm
-          tar czf "../../zvault-wasm-${GITHUB_REF_NAME}.tar.gz" pkg/
-          echo "ASSET=zvault-wasm-${GITHUB_REF_NAME}.tar.gz" >> "$GITHUB_ENV"
-
-      - name: Upload artifact
+      - name: Upload WASM pkg
         uses: actions/upload-artifact@v7
         with:
-          name: release-wasm
-          path: ${{ env.ASSET }}
-          retention-days: 1
+          name: zvault-wasm-pkg
+          path: crates/zvault-wasm/pkg/
+          retention-days: 30
 
   # ── Browser extension ───────────────────────────────────────────────────────
   extension:
@@ -111,6 +114,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -120,45 +125,41 @@ jobs:
       - name: Download WASM pkg
         uses: actions/download-artifact@v7
         with:
-          name: release-wasm
-          path: .
+          name: zvault-wasm-pkg
+          path: crates/zvault-wasm/pkg/
 
-      - name: Extract WASM
-        run: tar xzf zvault-wasm-*.tar.gz -C crates/zvault-wasm/
-
-      - name: Build extension
+      - name: Install & build extension
         run: cd apps/extension && npm ci && npx wxt build
 
       - name: Package extension
-        run: |
-          cd apps/extension/.output
-          zip -r "../../../zvault-extension-chrome-mv3-${GITHUB_REF_NAME}.zip" chrome-mv3/
-          echo "ASSET=zvault-extension-chrome-mv3-${GITHUB_REF_NAME}.zip" >> "$GITHUB_ENV"
+        run: cd apps/extension/.output && zip -r ../../../zvault-extension-chrome-mv3.zip chrome-mv3/
 
-      - name: Upload artifact
+      - name: Upload extension artifact
         uses: actions/upload-artifact@v7
         with:
-          name: release-extension
-          path: ${{ env.ASSET }}
-          retention-days: 1
+          name: zvault-extension-chrome-mv3
+          path: zvault-extension-chrome-mv3.zip
+          retention-days: 30
 
   # ── Desktop app (Tauri) ─────────────────────────────────────────────────────
   desktop:
-    name: Desktop (${{ matrix.target }})
+    name: Desktop (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Install system dependencies (Linux)
         if: matrix.os == 'ubuntu-latest'
@@ -176,8 +177,11 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install & build frontend
-        run: cd apps/desktop && npm ci && npm run build
+      - name: Install frontend dependencies
+        run: cd apps/desktop && npm ci
+
+      - name: Build frontend
+        run: cd apps/desktop && npm run build
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked
@@ -188,9 +192,9 @@ jobs:
       - name: Upload desktop artifact
         uses: actions/upload-artifact@v7
         with:
-          name: release-desktop-${{ matrix.target }}
+          name: desktop-${{ matrix.target }}
           path: apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/
-          retention-days: 1
+          retention-days: 30
 
   # ── Android native libraries ────────────────────────────────────────────────
   android:
@@ -199,6 +203,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Install Rust stable + Android targets
         uses: dtolnay/rust-toolchain@stable
@@ -226,45 +232,11 @@ jobs:
           cp target/aarch64-linux-android/release/libzvault_uniffi.so jniLibs/arm64-v8a/
           cp target/armv7-linux-androideabi/release/libzvault_uniffi.so jniLibs/armeabi-v7a/
           cp target/x86_64-linux-android/release/libzvault_uniffi.so jniLibs/x86_64/
-          zip -r "zvault-android-jnilibs-${GITHUB_REF_NAME}.zip" jniLibs/
-          echo "ASSET=zvault-android-jnilibs-${GITHUB_REF_NAME}.zip" >> "$GITHUB_ENV"
+          zip -r zvault-android-jnilibs.zip jniLibs/
 
-      - name: Upload artifact
+      - name: Upload Android libraries
         uses: actions/upload-artifact@v7
         with:
-          name: release-android
-          path: ${{ env.ASSET }}
-          retention-days: 1
-
-  # ── Create GitHub Release ───────────────────────────────────────────────────
-  release:
-    name: Create GitHub Release
-    needs: [cli, wasm, extension, desktop, android]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Download all release artifacts
-        uses: actions/download-artifact@v7
-        with:
-          pattern: release-*
-          path: artefacts/
-          merge-multiple: true
-
-      - name: Generate SHA-256 checksums
-        run: |
-          cd artefacts
-          find . -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec sha256sum {} \; > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: |
-            artefacts/**/*.tar.gz
-            artefacts/**/*.zip
-            artefacts/**/SHA256SUMS.txt
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: zvault-android-jnilibs
+          path: zvault-android-jnilibs.zip
+          retention-days: 30
