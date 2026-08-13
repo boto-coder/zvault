@@ -1060,3 +1060,42 @@ mod tests {
         );
     }
 }
+
+// ─── Property-based tests ────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn nip44_encrypt_decrypt_roundtrip_arbitrary(
+            message in proptest::collection::vec(any::<u8>(), 1..2048)
+        ) {
+            // Use fixed keys for deterministic conversation key derivation.
+            let sk_a = [0x01u8; 32];
+            // Construct a valid secret key for party B.
+            let mut sk_b_bytes = [0u8; 32];
+            sk_b_bytes[31] = 0x02;
+            let sk_b = k256::SecretKey::from_slice(&sk_b_bytes).unwrap();
+            let pub_b = secret_key_to_pubkey_hex(&sk_b);
+
+            let ck = get_conversation_key(&sk_a, &pub_b).unwrap();
+            let encrypted = nip44_encrypt(&ck, &message).unwrap();
+            let decrypted = nip44_decrypt(&ck, &encrypted).unwrap();
+            prop_assert_eq!(decrypted, message);
+        }
+
+        #[test]
+        fn nip44_decrypt_never_panics_on_arbitrary_input(
+            data in proptest::collection::vec(any::<u8>(), 0..512)
+        ) {
+            let conversation_key = [0x42u8; 32];
+            if let Ok(payload) = std::str::from_utf8(&data) {
+                // Must not panic — errors are acceptable.
+                let _ = nip44_decrypt(&conversation_key, payload);
+            }
+        }
+    }
+}

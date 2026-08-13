@@ -715,3 +715,34 @@ mod tests {
         assert_eq!(key.as_bytes(), &[0xBEu8; 32]);
     }
 }
+
+// ─── Property-based tests ────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn encrypt_decrypt_roundtrip_arbitrary(plaintext in proptest::collection::vec(any::<u8>(), 0..4096)) {
+            let params = KdfParams {
+                salt: [0x42u8; 32],
+                m_cost: 8,
+                t_cost: 1,
+                p_cost: 1,
+            };
+            let key = derive_key("proptest-password", &params).unwrap();
+            let blob = encrypt_with_params(&key, &plaintext, &params).unwrap();
+            let recovered = decrypt(&key, &blob).unwrap();
+            prop_assert_eq!(recovered, plaintext);
+        }
+
+        #[test]
+        fn decrypt_never_panics_on_arbitrary_input(data in proptest::collection::vec(any::<u8>(), 0..1024)) {
+            let key = VaultKey::from_bytes(Zeroizing::new([0x42u8; 32]));
+            // Must not panic — errors are acceptable.
+            let _ = decrypt(&key, &data);
+        }
+    }
+}

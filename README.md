@@ -107,7 +107,25 @@ See [DESIGN.md](./DESIGN.md) for the full threat model, cryptographic design, an
 
 ## Development Status
 
-**M0 — Foundation** and **M1 — Core Crypto** (Argon2id KDF, AES-256-GCM) are complete. Currently working on **M2 — Vault Data Model** (CRUD, serialisation, on-disk format). See [DESIGN.md §16](./DESIGN.md) for the full milestone plan.
+All core milestones (M0–M4, M7–M8, M11–M12) are complete. The `zvault-core` library is feature-complete and hardened with fuzz testing and property-based tests.
+
+| Milestone | Description | Status |
+|---|---|---|
+| M0 | Foundation — repo, CI, workspace scaffold | ✅ Complete |
+| M1 | Core crypto — Argon2id KDF, AES-256-GCM | ✅ Complete |
+| M2 | Vault data model — CRUD, serialisation, on-disk format | ✅ Complete |
+| M3 | Device lifecycle — keypair, admit/revoke, CRDT | ✅ Complete |
+| M4 | Nostr sync — NIP-44/59, relay pub/sub, conflict resolution | ✅ Complete |
+| M5 | Desktop app shell — Tauri, React UI, vault CRUD | 🔲 Not started |
+| M6 | Biometric unlock — keychain, OS secure enclave | 🔲 Not started |
+| M7 | Import / Export — Bitwarden, CSV, `.zvault-export` | ✅ Complete |
+| M8 | Audit log — hash chain, storage, verification | ✅ Complete |
+| M9 | Browser extension — WXT, WASM core, auto-fill | 🔲 Not started |
+| M10 | Android app — UniFFI, Compose UI, Keystore | 🔲 Not started |
+| M11 | CLI tool — clap subcommands, scripting support | ✅ Complete |
+| M12 | Hardening & v1.0 — fuzz, proptest, docs, release | ✅ Complete |
+
+See [DESIGN.md](./DESIGN.md) for the full architecture and threat model, and [CHANGELOG.md](./CHANGELOG.md) for release history.
 
 ---
 

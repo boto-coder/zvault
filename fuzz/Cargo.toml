@@ -1,0 +1,42 @@
+[package]
+name = "zvault-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+zvault-core = { path = "../crates/zvault-core", features = ["test-helpers"] }
+zeroize = "1.8.1"
+
+# Prevent this from interfering with workspace builds.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_decrypt"
+path = "fuzz_targets/fuzz_decrypt.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_vault_parse"
+path = "fuzz_targets/fuzz_vault_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_nip44_decrypt"
+path = "fuzz_targets/fuzz_nip44_decrypt.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_import_csv"
+path = "fuzz_targets/fuzz_import_csv.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_import_bitwarden"
+path = "fuzz_targets/fuzz_import_bitwarden.rs"
+doc = false
