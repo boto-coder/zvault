@@ -21,6 +21,9 @@ namespace zvault {
 
   [Throws=ZVaultError]
   void delete_item([ByRef] VaultHandle handle, string item_id);
+
+  [Throws=ZVaultError]
+  void close_vault([ByRef] VaultHandle handle);
 };
 
 [Error]

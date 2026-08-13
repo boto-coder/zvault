@@ -209,3 +209,16 @@ pub fn delete_item(handle: &VaultHandle, item_id: String) -> Result<(), ZVaultEr
     session.vault.delete_item(id)?;
     Ok(())
 }
+
+/// Close an open vault session, releasing all resources and zeroing key material.
+///
+/// After this call the handle is invalid; any subsequent calls using it will
+/// return `InvalidInput`.  The [`VaultKey`] held in the session is dropped here,
+/// triggering `Zeroizing<[u8; 32]>` to overwrite the key bytes with zeros.
+pub fn close_vault(handle: &VaultHandle) -> Result<(), ZVaultError> {
+    let mut reg = registry().lock().expect("registry lock poisoned");
+    reg.remove(&handle.id)
+        .ok_or_else(|| ZVaultError::InvalidInput("invalid handle".to_string()))?;
+    // VaultSession (including VaultKey) is dropped here → key bytes zeroed.
+    Ok(())
+}
