@@ -616,3 +616,64 @@ mod tests {
         assert_eq!(items[2].id, id_d);
     }
 }
+
+// ─── Property-based tests ────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Strategy to generate a VaultItem with an arbitrary name.
+    fn arb_vault_item() -> impl Strategy<Value = VaultItem> {
+        "[a-zA-Z0-9 ]{1,64}".prop_map(|name| {
+            let mut item = VaultItem::new(ItemKind::Login, name);
+            item.username = Some("user@example.com".into());
+            item.password = Some("secret123".into());
+            item
+        })
+    }
+
+    proptest! {
+        /// Deleting one item must preserve all other items unchanged.
+        #[test]
+        fn delete_item_preserves_others(
+            items in proptest::collection::vec(arb_vault_item(), 2..20),
+            delete_idx in any::<proptest::sample::Index>(),
+        ) {
+            let mut vault = Vault::new();
+            let mut ids = Vec::new();
+
+            for item in &items {
+                ids.push(item.id);
+                vault.add_item(item.clone());
+            }
+
+            // Pick a valid index to delete.
+            let idx = delete_idx.index(ids.len());
+            let deleted_id = ids[idx];
+
+            vault.delete_item(deleted_id).unwrap();
+
+            // All other items must still be present, in order.
+            let remaining: Vec<Uuid> = vault.list_items().iter().map(|i| i.id).collect();
+            let expected: Vec<Uuid> = ids.iter().copied().filter(|id| *id != deleted_id).collect();
+            prop_assert_eq!(remaining, expected);
+        }
+
+        /// Adding items always increases the count by exactly one.
+        #[test]
+        fn add_item_increases_count(name in "[a-zA-Z0-9]{1,32}") {
+            let mut vault = Vault::new();
+            let before = vault.list_items().len();
+            vault.add_item(VaultItem::new(ItemKind::SecureNote, name));
+            prop_assert_eq!(vault.list_items().len(), before + 1);
+        }
+
+        /// from_json never panics on arbitrary data.
+        #[test]
+        fn from_json_never_panics(data in proptest::collection::vec(any::<u8>(), 0..2048)) {
+            let _ = Vault::from_json(&data);
+        }
+    }
+}
