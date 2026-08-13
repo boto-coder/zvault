@@ -253,3 +253,72 @@ all sensitive fields on release.
 **Re-evaluate:** M5 (desktop UI) — before any UI layer clones items into
 observable state (e.g. form fields), consider switching sensitive fields to
 `Zeroizing<String>` or a custom `SecretString` type.
+
+
+---
+
+## M3 Design Decisions & Gotchas
+
+### Why OR-Set CRDT for the device list
+
+The device list needs to support concurrent updates from multiple devices
+(concurrent admit, concurrent revoke).  An OR-Set (Observed-Remove Set with
+add-wins semantics) is the simplest CRDT that correctly handles this:
+
+- Each admit tags the device_id with a unique token.
+- A revoke removes all currently-observed tokens for that device.
+- Merging two replicas: union the `adds` and `removes`, then filter `adds` to
+  drop any token present in `removes`.
+- Concurrent add + remove → add wins (different token survives).
+- Concurrent add on both replicas of the same device_id: both tokens survive in
+  `adds`, so the device appears once in `elements()` (deduplicated by the
+  `DeviceManager` entries layer).
+
+### Deterministic OR-Set tokens for vault reconstruction
+
+Standard OR-Set adds use fresh random tokens.  For `DeviceManager`, we use the
+`device_id` UUID itself as the OR-Set token (deterministic).  This allows the
+CRDT state to be rebuilt identically from the flat `Vault::devices` list on
+every `from_vault()` call, without storing the token out-of-band.
+
+**Trade-off:** if a device is re-admitted after being revoked (edge case), the
+same token would appear again.  This is intentionally not supported — revocation
+is permanent in v1.
+
+### SigningKey zeroing
+
+`k256::ecdsa::SigningKey` implements `ZeroizeOnDrop` (verified in `ecdsa-0.16`
+source).  The short-lived `SigningKey` created in `DeviceIdentity::generate()`
+is zeroed on drop without any extra work.
+
+The `secret_bytes: Zeroizing<Vec<u8>>` extracted from the key is also zeroed
+on drop before the function returns.
+
+### Why `AeadOsRng` for key generation (not `rand::thread_rng`)
+
+`k256::ecdsa::SigningKey::random()` requires a `CryptoRng + RngCore` from
+`rand_core 0.6`.  The workspace uses `rand_core 0.9` for everything else, which
+is a different compiled crate.  Importing `rand_core 0.9` here would cause a
+type mismatch with `SigningKey::random`.
+
+The same `aes_gcm::aead::OsRng` workaround used in `crypto/mod.rs` is applied
+here: `use aes_gcm::aead::OsRng as AeadOsRng` provides the `rand_core 0.6`
+`OsRng` that satisfies `SigningKey::random`.
+
+### DeviceManager::Clone — public data only
+
+`DeviceManager` derives `Clone` to support CRDT test scenarios (cloning to
+create a diverged replica).  `DeviceManager` holds:
+
+- `OrSet<Uuid>` — only device_id UUIDs; no secrets.
+- `Vec<DeviceEntry>` — public device metadata (pubkey hex, label, timestamps); no secrets.
+
+The device secret key lives exclusively in `SecureStorage`, never in
+`DeviceManager`.
+
+### test-helpers feature
+
+`InMemoryStorage` (the test-only `SecureStorage` backend) is gated behind
+`#[cfg(any(test, feature = "test-helpers"))]`.  The `test-helpers` feature is
+declared in `Cargo.toml` so integration test crates can opt in without
+enabling it for production builds.

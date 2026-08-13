@@ -2,7 +2,7 @@
 
 ## Current status
 
-M0, M1, and M2 complete. Starting M3.
+M0, M1, M2, and M3 complete. Starting M4.
 
 ## Milestone overview
 
@@ -11,7 +11,7 @@ M0, M1, and M2 complete. Starting M3.
 | M0 | Foundation — repo, CI, workspace scaffold | ✅ Done |
 | M1 | Core crypto — Argon2id KDF, AES-256-GCM | ✅ Done |
 | M2 | Vault data model — CRUD, serialisation, on-disk format | ✅ Done |
-| M3 | Device lifecycle — keypair, admit/revoke, CRDT | 🔲 Not started |
+| M3 | Device lifecycle — keypair, admit/revoke, CRDT | ✅ Done |
 | M4 | Nostr sync — NIP-44/59, relay pub/sub, conflict resolution | 🔲 Not started |
 | M5 | Desktop app shell — Tauri, React UI, vault CRUD | 🔲 Not started |
 | M6 | Biometric unlock — keychain, OS secure enclave integration | 🔲 Not started |
@@ -48,20 +48,15 @@ M0, M1, and M2 complete. Starting M3.
 - Vertical slices: each phase ships a working end-to-end slice
 - Security review at each milestone before proceeding
 
-## Current milestone: M3
+## Current milestone: M4 — Nostr sync
 
-### M3 scope
-- Device keypair generation (secp256k1 via `k256`)
-- `DeviceManager`: add/admit/revoke devices, persist to vault
-- OR-Set CRDT for device list (add-wins semantics)
-- Device identity: Nostr pubkey + label + admit/revoke timestamps
-- Integration tests: admit device, revoke device, CRDT merge
-
-### M3 next actions
-1. Implement device keypair generation in `device/mod.rs`
-2. Implement admit/revoke logic with OR-Set CRDT
-3. Wire device list into `Vault` serialisation
-4. Write integration tests
+### M4 scope
+- Nostr keypair generation and event signing (NIP-01)
+- NIP-44 encryption (XChaCha20-Poly1305) for vault sync events
+- NIP-59 gift-wrap for metadata hiding
+- WebSocket relay connection (publish + subscribe)
+- Sync engine: message construction, conflict resolution using `version` counter
+- Integration tests with a local relay or mock
 
 ## Completed milestones
 
@@ -110,3 +105,21 @@ Security review findings addressed:
 - LOW: `atomic_write` used `with_extension("tmp")` — fixed to append `.tmp` to full filename
 - LOW: `VaultItem::Clone` copies sensitive fields — accepted risk; doc warning added; re-evaluate at M5
 - INFO: Timestamp vs version counter — documented in tech.md; M4 must use `version` for conflict detection
+
+### M3 — Device Lifecycle (complete)
+Delivered:
+- `DeviceIdentity` — in-memory view of this device: `device_id` (UUID) + `pubkey_hex`; secret key never stored in struct
+- `DeviceIdentity::generate(label, storage)` — generates secp256k1 keypair, persists secret to `SecureStorage`, returns identity + key material
+- `DeviceIdentity::load_secret_key(storage)` — retrieves secret key wrapped in `Zeroizing<Vec<u8>>`
+- `SecureStorage` trait — abstraction over OS secure key storage; `InMemoryStorage` for tests (gated behind `#[cfg(any(test, feature = "test-helpers"))]`)
+- `OrSet<T>` — generic OR-Set CRDT: `add`, `remove`, `contains`, `elements`, `merge`; add-wins semantics
+- `DeviceManager` — wraps vault's device list with CRDT-backed operations: `bootstrap`, `admit`, `revoke`, `merge`, `flush`
+- `DeviceManager::from_vault(vault)` — reconstructs CRDT state from `Vault::devices` using deterministic tokens
+- `DeviceManager::flush(vault)` — writes device list back to vault, bumps `vault.version`
+- `Cargo.toml`: `test-helpers` feature declared so downstream crates can use `InMemoryStorage`
+- 27 device module tests (keypair, OR-Set CRDT, DeviceManager lifecycle, CRDT merge, vault round-trips); 82 total workspace tests pass
+
+Security review findings addressed:
+- INFO: `k256::ecdsa::SigningKey` implements `ZeroizeOnDrop` — secret scalar zeroed on drop automatically
+- INFO: `DeviceManager::Clone` only clones `OrSet<Uuid>` and `Vec<DeviceEntry>` — no secret material
+- INFO: `InMemoryStorage` gated to test code; documented as non-production in doc comment

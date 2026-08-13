@@ -12,6 +12,8 @@ rust-version.workspace = true
 default = ["biometric"]
 # Compile out biometric unlock on platforms that don't support it
 biometric = []
+# Expose InMemoryStorage and other test helpers to dependent crates (e.g. integration tests)
+test-helpers = []
 
 [dependencies]
 serde        = { workspace = true }
