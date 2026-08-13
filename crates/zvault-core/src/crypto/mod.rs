@@ -109,13 +109,24 @@ pub const DEFAULT_P_COST: u32 = 4;
 pub struct VaultKey(pub(crate) Zeroizing<[u8; 32]>);
 
 impl VaultKey {
-    /// Create a `VaultKey` from raw bytes.
+    /// Create a `VaultKey` from a [`Zeroizing`]-wrapped 32-byte array.
     ///
-    /// Callers are responsible for ensuring the bytes represent a valid
-    /// 256-bit key and for zeroing the source slice if needed.
+    /// Accepting `Zeroizing<[u8; 32]>` instead of a raw array forces callers
+    /// to acknowledge the zeroing obligation at the type level.  The source
+    /// buffer will be zeroed when the `Zeroizing` wrapper is dropped, which
+    /// happens inside this call (move semantics), so no key material lingers
+    /// in the caller's frame.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use zeroize::Zeroizing;
+    /// let raw = Zeroizing::new([0u8; 32]); // fill with real key bytes first
+    /// let key = VaultKey::from_bytes(raw);
+    /// ```
     #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(Zeroizing::new(bytes))
+    pub fn from_bytes(bytes: Zeroizing<[u8; 32]>) -> Self {
+        Self(bytes)
     }
 
     /// Return a reference to the raw key bytes.
@@ -171,17 +182,77 @@ impl KdfParams {
     }
 
     /// Deserialise KDF params from their on-disk binary representation.
-    fn from_bytes(data: &[u8; SALT_LEN + KDF_PARAM_BYTES]) -> Self {
+    pub(crate) fn from_bytes(data: &[u8; SALT_LEN + KDF_PARAM_BYTES]) -> Self {
         let mut salt = [0u8; SALT_LEN];
         salt.copy_from_slice(&data[..SALT_LEN]);
-        let m_cost = u32::from_le_bytes(data[SALT_LEN..SALT_LEN + 4].try_into().unwrap());
-        let t_cost = u32::from_le_bytes(data[SALT_LEN + 4..SALT_LEN + 8].try_into().unwrap());
-        let p_cost = u32::from_le_bytes(data[SALT_LEN + 8..SALT_LEN + 12].try_into().unwrap());
+        // INVARIANT: the slices are exact sub-ranges of a fixed [u8; 44] input,
+        // so try_into() cannot fail — the lengths are known at compile time.
+        let m_cost = u32::from_le_bytes(
+            data[SALT_LEN..SALT_LEN + 4]
+                .try_into()
+                .expect("infallible: 4-byte sub-slice of fixed [u8; 44]"),
+        );
+        let t_cost = u32::from_le_bytes(
+            data[SALT_LEN + 4..SALT_LEN + 8]
+                .try_into()
+                .expect("infallible: 4-byte sub-slice of fixed [u8; 44]"),
+        );
+        let p_cost = u32::from_le_bytes(
+            data[SALT_LEN + 8..SALT_LEN + 12]
+                .try_into()
+                .expect("infallible: 4-byte sub-slice of fixed [u8; 44]"),
+        );
         Self { salt, m_cost, t_cost, p_cost }
     }
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
+
+/// Parse the [`KdfParams`] embedded in an encrypted vault blob without
+/// decrypting it.
+///
+/// This is the entry point for the two-step open sequence used by
+/// `VaultFile::open`:
+///
+/// ```text
+/// 1. parse_kdf_params(&blob)  → KdfParams
+/// 2. derive_key(password, &params) → VaultKey
+/// 3. decrypt(&key, &blob)     → plaintext
+/// ```
+///
+/// Calling this function avoids re-parsing the header inside `decrypt` and
+/// keeps the KDF params accessible to callers that need them (e.g. to display
+/// current cost params to the user, or to decide whether a re-key is needed).
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidVaultFile`] if the blob is too short or the magic
+/// bytes are wrong.  Cost parameters are not validated here — invalid values
+/// will be caught later by [`derive_key`].
+pub fn parse_kdf_params(blob: &[u8]) -> Result<KdfParams> {
+    let min_len = HEADER_LEN + TAG_LEN;
+    if blob.len() < min_len {
+        return Err(Error::InvalidVaultFile(format!(
+            "blob too short: {} bytes (minimum {min_len})",
+            blob.len()
+        )));
+    }
+
+    if &blob[..MAGIC.len()] != MAGIC {
+        return Err(Error::InvalidVaultFile(format!(
+            "bad magic: expected {MAGIC:?}, got {:?}",
+            &blob[..MAGIC.len()]
+        )));
+    }
+
+    let kdf_start = MAGIC.len();
+    let iv_start = kdf_start + SALT_LEN + KDF_PARAM_BYTES;
+    let kdf_raw: &[u8; SALT_LEN + KDF_PARAM_BYTES] = blob[kdf_start..iv_start]
+        .try_into()
+        .map_err(|_| Error::InvalidVaultFile("cannot read KDF params".into()))?;
+
+    Ok(KdfParams::from_bytes(kdf_raw))
+}
 
 /// Derive a [`VaultKey`] from `password` and the provided [`KdfParams`].
 ///
@@ -233,7 +304,24 @@ pub fn encrypt(key: &VaultKey, plaintext: &[u8]) -> Result<Vec<u8>> {
 
 /// Like [`encrypt`] but accepts explicit [`KdfParams`].
 ///
-/// Intended for testing (deterministic salt) and re-key operations.
+/// # When to use this
+///
+/// Use this function only for:
+/// - **Re-key operations** — where you need to write a new blob under a new
+///   password but want to specify the cost parameters explicitly.
+/// - **Testing** — where a deterministic salt is needed for reproducibility.
+///
+/// # ⚠ Salt reuse warning
+///
+/// The `KdfParams` passed here must contain a **fresh random salt** for every
+/// independent encryption operation.  Reusing the same salt across two
+/// different vaults (or two different passwords) violates the Argon2id security
+/// model: an attacker who knows both blobs share a salt can batch-crack the
+/// passwords.
+///
+/// Use [`KdfParams::generate()`] to obtain a salt-safe set of params.  Never
+/// construct `KdfParams` manually with a hardcoded or recycled salt outside of
+/// tests.
 ///
 /// # Errors
 ///
@@ -288,36 +376,17 @@ pub fn encrypt_with_params(
 /// - [`Error::Crypto`] — AES-GCM key init failed (should not happen in
 ///   practice).
 pub fn decrypt(key: &VaultKey, blob: &[u8]) -> Result<Vec<u8>> {
-    // Minimum length: header + at least 0 bytes of ciphertext + 16-byte tag.
-    let min_len = HEADER_LEN + TAG_LEN;
-    if blob.len() < min_len {
-        return Err(Error::InvalidVaultFile(format!(
-            "blob too short: {} bytes (minimum {min_len})",
-            blob.len()
-        )));
-    }
+    // Validate magic and length, and parse KDF params (used for diagnostic
+    // clarity; the GCM tag is the actual authentication).
+    let _kdf_params = parse_kdf_params(blob)?;
 
-    // Verify magic.
-    let magic = &blob[..MAGIC.len()];
-    if magic != MAGIC {
-        return Err(Error::InvalidVaultFile(format!(
-            "bad magic: expected {MAGIC:?}, got {magic:?}",
-        )));
-    }
-
-    // Parse header fields.
-    let kdf_start = MAGIC.len();
-    let iv_start = kdf_start + SALT_LEN + KDF_PARAM_BYTES;
+    // Header offsets — parse_kdf_params already checked these are in bounds.
+    let iv_start = MAGIC.len() + SALT_LEN + KDF_PARAM_BYTES;
     let payload_start = iv_start + IV_LEN;
 
-    let kdf_raw: &[u8; SALT_LEN + KDF_PARAM_BYTES] = blob[kdf_start..iv_start]
-        .try_into()
-        .map_err(|_| Error::InvalidVaultFile("cannot read KDF params".into()))?;
-
-    let _kdf_params = KdfParams::from_bytes(kdf_raw);
     let nonce = Nonce::from_slice(&blob[iv_start..payload_start]);
 
-    // Reconstruct AAD (everything before the ciphertext).
+    // AAD is the full header (everything before the ciphertext).
     let aad = &blob[..payload_start];
 
     // Build cipher and decrypt.
@@ -548,6 +617,60 @@ mod tests {
         assert_ne!(a.salt, b.salt);
     }
 
+    // ── parse_kdf_params ─────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_kdf_params_roundtrip() {
+        // Encrypt with known params; then parse_kdf_params should recover them.
+        let key = test_key("parse-params");
+        let params_in = KdfParams {
+            salt: [0x77u8; 32],
+            m_cost: 8,
+            t_cost: 1,
+            p_cost: 1,
+        };
+        let blob = encrypt_with_params(&key, b"payload", &params_in).unwrap();
+        let params_out = parse_kdf_params(&blob).unwrap();
+        assert_eq!(params_in, params_out);
+    }
+
+    #[test]
+    fn parse_kdf_params_rejects_too_short() {
+        assert!(parse_kdf_params(&[0u8; 10]).is_err());
+    }
+
+    #[test]
+    fn parse_kdf_params_rejects_bad_magic() {
+        let key = test_key("parse-bad-magic");
+        let mut blob = encrypt(&key, b"x").unwrap();
+        blob[0] = b'X';
+        assert!(parse_kdf_params(&blob).is_err());
+    }
+
+    #[test]
+    fn parse_kdf_params_enables_two_step_open() {
+        // Simulate the VaultFile::open pattern:
+        // 1. parse params from blob
+        // 2. derive key from password + params
+        // 3. decrypt
+        let password = "correct-horse-battery-staple";
+        let original_params = KdfParams {
+            salt: [0x99u8; 32],
+            m_cost: 8,
+            t_cost: 1,
+            p_cost: 1,
+        };
+        let key = derive_key(password, &original_params).unwrap();
+        let blob = encrypt_with_params(&key, b"vault contents", &original_params).unwrap();
+
+        // --- open sequence ---
+        let parsed_params = parse_kdf_params(&blob).unwrap();
+        let open_key = derive_key(password, &parsed_params).unwrap();
+        let plaintext = decrypt(&open_key, &blob).unwrap();
+
+        assert_eq!(plaintext, b"vault contents");
+    }
+
     // ── Header layout ────────────────────────────────────────────────────────
 
     #[test]
@@ -555,5 +678,15 @@ mod tests {
         // Verify the HEADER_LEN constant against the actual layout.
         let expected = MAGIC.len() + SALT_LEN + KDF_PARAM_BYTES + IV_LEN;
         assert_eq!(HEADER_LEN, expected);
+    }
+
+    // ── VaultKey::from_bytes accepts Zeroizing ────────────────────────────────
+
+    #[test]
+    fn vault_key_from_bytes_accepts_zeroizing() {
+        use zeroize::Zeroizing;
+        let raw = Zeroizing::new([0xBEu8; 32]);
+        let key = VaultKey::from_bytes(raw);
+        assert_eq!(key.as_bytes(), &[0xBEu8; 32]);
     }
 }
