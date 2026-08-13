@@ -1,0 +1,26 @@
+[package]
+name = "zvault-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "WebAssembly bindings for zvault-core — used by the browser extension"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+zvault-core = { path = "../zvault-core", default-features = false }
+wasm-bindgen = "0.2"
+serde-wasm-bindgen = "0.6"
+serde_json = "1.0"
+js-sys = "0.3"
+totp-rs = "5.6"
+# Enable JS-based RNG for getrandom on wasm32-unknown-unknown.
+# getrandom 0.2 is pulled in transitively by aes-gcm/rand_core 0.6.
+# getrandom 0.3 is pulled in transitively by rand 0.9/rand_core 0.9.
+getrandom = { version = "0.2", features = ["js"] }
+getrandom_0_3 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+# uuid needs js feature for v4 UUID generation on wasm32-unknown-unknown.
+uuid = { version = "1", features = ["v4", "js"] }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

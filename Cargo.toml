@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/zvault-core",
     "crates/zvault-cli",
+    "crates/zvault-wasm",
 ]
 
 [workspace.package]
