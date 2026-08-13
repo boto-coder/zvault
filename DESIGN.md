@@ -774,3 +774,117 @@ UniFFI (Mozilla's Universal Foreign Function Interface) automatically generates 
 ### Last-write-wins vs CRDT for vault items
 
 A full CRDT (e.g., Automerge) would allow true field-level merge semantics. However, it adds significant complexity and binary size (especially in WASM). For a password manager, concurrent edits to the same item are rare. LWW at item granularity is sufficient for v1 and can be upgraded later. Device list operations (admit/revoke) do use a proper OR-Set CRDT because correctness is critical there.
+
+
+---
+
+## 19. Android App Architecture
+
+The ZVault Android app is built with Kotlin and Jetpack Compose, using UniFFI to bridge the Rust `zvault-core` library into native Android code. The architecture follows the MVVM (Model-View-ViewModel) pattern with unidirectional data flow.
+
+### 19.1 UI Layer — Jetpack Compose
+
+The UI is built entirely with Jetpack Compose and Material 3 (Material You). Screens are stateless composables that receive data via parameters and emit events via callbacks:
+
+- **UnlockScreen** — password entry, vault creation, biometric unlock trigger
+- **VaultListScreen** — LazyColumn of items with search filtering and FAB
+- **ItemDetailScreen** — view/edit item fields with password visibility toggle
+- **AddItemScreen** — form with dynamic fields based on item kind (Login, Secure Note, Card, Identity)
+- **DevicesScreen** — device trust group management (admit/revoke)
+- **SettingsScreen** — biometric toggle, export/import, re-key password
+
+Navigation is handled by Compose Navigation (`NavHost`) with a declarative route graph. The `VaultViewModel` drives navigation state: when the vault is locked, the nav graph routes to `UnlockScreen`; when unlocked, to `VaultListScreen`.
+
+### 19.2 ViewModel Layer
+
+`VaultViewModel` (an `AndroidViewModel`) is the single source of truth for UI state. It exposes:
+
+- `uiState: StateFlow<VaultUiState>` — sealed interface: `Locked`, `Unlocking`, `Unlocked`, `Error`
+- `items: StateFlow<List<VaultItem>>` — current vault contents
+- `devices: StateFlow<List<DeviceInfo>>` — trust group members
+- `selectedItem: StateFlow<VaultItem?>` — item selected for detail view
+
+All mutation methods (`addItem`, `updateItem`, `deleteItem`, `lockVault`, etc.) launch coroutines on `Dispatchers.IO` and update the StateFlows on completion. The Compose layer observes these flows via `collectAsState()` and recomposes automatically.
+
+### 19.3 UniFFI Bridge — `VaultRepository`
+
+`VaultRepository` is the boundary between Kotlin and Rust. It:
+
+1. Calls UniFFI-generated Kotlin functions (auto-generated from `zvault-core`'s UDL definition)
+2. Runs all calls on `Dispatchers.IO` (Argon2id derivation is CPU-intensive)
+3. Maps Rust types to Kotlin data classes (`VaultItem`, `DeviceInfo`)
+4. Holds the opaque vault handle (a `Long` pointer to the Rust-side `VaultFile` + `VaultKey`)
+
+The native library (`libzvault_core.so`) is loaded once at app startup in `ZVaultApplication.onCreate()` via `System.loadLibrary("zvault_core")`.
+
+### 19.4 Android Keystore — Device Secret Key
+
+Each device generates a secp256k1 keypair on first launch (via `DeviceIdentity::generate()` in Rust). The secret key bytes are stored in the Android Keystore:
+
+- Key alias: `zvault_device_key_{device_uuid}`
+- Key properties: `PURPOSE_SIGN`, hardware-backed when available (StrongBox)
+- The Keystore is backed by Trusted Execution Environment (TEE) or StrongBox on supported hardware
+- Secret key material never leaves the secure hardware boundary
+
+### 19.5 BiometricPrompt — Vault Unlock
+
+Biometric unlock wraps the `VaultKey` (derived from the master password via Argon2id) with a biometric-bound Keystore key:
+
+1. **Enrollment:** After a successful password unlock, the 32-byte `VaultKey` is encrypted with an AES-256-GCM key stored in Keystore with `setUserAuthenticationRequired(true)` and `setInvalidatedByBiometricEnrollment(true)`.
+2. **Unlock:** `BiometricPrompt` authenticates the user → Keystore releases the AES key → the wrapped `VaultKey` is decrypted → vault opens without re-running Argon2id.
+3. **Invalidation:** If biometric enrollment changes (new fingerprint added), the Keystore key is invalidated and the user must re-enter their password.
+
+This design ensures biometric unlock never weakens vault encryption — it is a convenience gate to an OS-held key blob, not an alternative to the master password.
+
+### 19.6 WorkManager — Background Sync
+
+Nostr sync is scheduled via `WorkManager` with the following constraints:
+
+- **Periodic sync:** every 15 minutes (minimum interval) when network is available
+- **Constraints:** `NetworkType.CONNECTED` (any network), battery not low
+- **One-time sync:** triggered immediately on vault mutation or manual "sync now"
+- **Retry policy:** exponential backoff on relay connection failure
+
+The sync worker calls `zvault-core`'s sync engine via UniFFI, which builds NIP-44/NIP-59 gift-wrapped messages and publishes to configured relays.
+
+### 19.7 AutofillService — Credential Filling
+
+ZVault implements `android.service.autofill.AutofillService` to provide system-wide credential autofill:
+
+1. System triggers `onFillRequest` when an app presents a login form
+2. ZVault matches the requesting app's package name and web domain against stored item URIs
+3. Matching credentials are presented in the autofill picker
+4. On selection, the vault must be unlocked (biometric prompt if locked)
+5. Username and password are filled into the requesting app's fields
+
+Security constraints:
+- Autofill responses never include TOTP secrets or notes
+- URI matching is strict (exact domain, no subdomain wildcards by default)
+- The vault key is required for every fill operation (no credential caching)
+
+### 19.8 Data Flow Summary
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Compose UI Layer                       │
+│  UnlockScreen │ VaultListScreen │ ItemDetail │ Settings  │
+└────────────────────────┬────────────────────────────────┘
+                         │ collectAsState()
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│                   VaultViewModel                          │
+│  StateFlow<VaultUiState> │ StateFlow<List<VaultItem>>    │
+└────────────────────────┬────────────────────────────────┘
+                         │ suspend fun (Dispatchers.IO)
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│                   VaultRepository                         │
+│  UniFFI calls │ Kotlin ↔ Rust type mapping               │
+└────────────────────────┬────────────────────────────────┘
+                         │ JNI / UniFFI
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│                   zvault-core (Rust)                      │
+│  Argon2id │ AES-256-GCM │ NIP-44 │ CRDT │ Vault CRUD   │
+└─────────────────────────────────────────────────────────┘
+```

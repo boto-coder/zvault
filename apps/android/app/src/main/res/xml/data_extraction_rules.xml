@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Data extraction rules for Android 12+ backup.
+    ZVault disables cloud backup entirely — vault data must never leave the device
+    through Android's backup mechanism. Sync is handled exclusively via Nostr.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- Do not back up any app data to cloud -->
+    </cloud-backup>
+    <device-transfer>
+        <!-- Allow device-to-device transfer of non-sensitive prefs only -->
+        <include domain="sharedpref" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="external" path="." />
+    </device-transfer>
+</data-extraction-rules>

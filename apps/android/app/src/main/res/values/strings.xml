@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ZVault</string>
+
+    <!-- Unlock screen -->
+    <string name="unlock_title">ZVault</string>
+    <string name="unlock_subtitle">Local-first encrypted password manager</string>
+    <string name="password_label">Password</string>
+    <string name="master_password_label">Master Password</string>
+    <string name="confirm_password_label">Confirm Password</string>
+    <string name="unlock_button">Unlock</string>
+    <string name="create_vault_button">Create Vault</string>
+    <string name="biometric_unlock_button">Unlock with Biometrics</string>
+    <string name="biometric_prompt_title">Unlock ZVault</string>
+    <string name="biometric_prompt_subtitle">Use your fingerprint or face to unlock</string>
+    <string name="biometric_prompt_cancel">Use password</string>
+    <string name="deriving_key">Deriving key…</string>
+    <string name="passwords_no_match">Passwords do not match</string>
+    <string name="already_have_vault">Already have a vault? Unlock</string>
+    <string name="create_new_vault">Create new vault</string>
+
+    <!-- Vault list -->
+    <string name="vault_list_title">ZVault</string>
+    <string name="search_placeholder">Search vault…</string>
+    <string name="empty_vault">Your vault is empty.\nTap + to add your first item.</string>
+    <string name="no_search_results">No items match \"%s\"</string>
+
+    <!-- Item types -->
+    <string name="item_kind_login">Login</string>
+    <string name="item_kind_secure_note">Secure Note</string>
+    <string name="item_kind_card">Card</string>
+    <string name="item_kind_identity">Identity</string>
+
+    <!-- Item detail -->
+    <string name="item_detail_title">Item Details</string>
+    <string name="edit_item_title">Edit Item</string>
+    <string name="name_label">Name</string>
+    <string name="username_label">Username</string>
+    <string name="uri_label">URI</string>
+    <string name="totp_secret_label">TOTP Secret</string>
+    <string name="notes_label">Notes</string>
+    <string name="card_number_label">Card Number</string>
+    <string name="card_expiry_label">Expiry</string>
+    <string name="card_cvv_label">CVV</string>
+    <string name="identity_name_label">Full Name</string>
+    <string name="identity_email_label">Email</string>
+    <string name="identity_phone_label">Phone</string>
+    <string name="identity_address_label">Address</string>
+    <string name="save_button">Save</string>
+    <string name="cancel_button">Cancel</string>
+    <string name="delete_button">Delete Item</string>
+    <string name="delete_confirm_title">Delete Item</string>
+    <string name="delete_confirm_message">Are you sure you want to delete \"%s\"? This cannot be undone.</string>
+
+    <!-- Add item -->
+    <string name="add_item_title">Add Item</string>
+    <string name="type_label">Type</string>
+    <string name="uri_website_label">URI / Website</string>
+    <string name="totp_optional_label">TOTP Secret (optional)</string>
+    <string name="expiry_format_label">Expiry (MM/YY)</string>
+
+    <!-- Devices -->
+    <string name="devices_title">Devices</string>
+    <string name="admit_button">Admit</string>
+    <string name="revoke_button">Revoke</string>
+    <string name="this_device">(this device)</string>
+    <string name="admitted_prefix">Admitted:</string>
+    <string name="no_devices">No devices in trust group</string>
+    <string name="revoke_confirm_title">Revoke Device</string>
+    <string name="revoke_confirm_message">Revoke \"%s\"? This device will no longer receive vault updates and its future sync messages will be rejected.</string>
+    <string name="admit_device_title">Admit Device</string>
+    <string name="admit_device_description">Enter the public key and label of the device to admit to this vault\'s trust group.</string>
+    <string name="pubkey_label">Public Key (hex)</string>
+    <string name="device_label_label">Device Label</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="security_section">Security</string>
+    <string name="biometric_toggle_title">Biometric Unlock</string>
+    <string name="biometric_toggle_subtitle">Use fingerprint or face to unlock vault</string>
+    <string name="biometric_unavailable">Biometric hardware not available</string>
+    <string name="change_password_title">Change Master Password</string>
+    <string name="change_password_subtitle">Re-key the vault with a new password</string>
+    <string name="change_password_warning">This will re-encrypt your vault with a new password. The operation cannot be undone.</string>
+    <string name="current_password_label">Current Password</string>
+    <string name="new_password_label">New Password</string>
+    <string name="confirm_new_password_label">Confirm New Password</string>
+    <string name="change_password_button">Change Password</string>
+    <string name="data_section">Data</string>
+    <string name="export_title">Export Vault</string>
+    <string name="export_subtitle">Export as encrypted .zvault-export backup</string>
+    <string name="import_title">Import</string>
+    <string name="import_subtitle">Import from Bitwarden, 1Password, LastPass, CSV, or KDBX</string>
+    <string name="about_section">About</string>
+    <string name="about_version">v1.0.0 — Local-first encrypted password manager</string>
+    <string name="about_encryption">Argon2id (KDF) + AES-256-GCM (at rest)\nNIP-44 XChaCha20-Poly1305 (sync)</string>
+</resources>
