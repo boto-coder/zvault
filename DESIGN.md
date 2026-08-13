@@ -31,10 +31,14 @@ Each device holds its own complete copy of the vault. Changes are encrypted and 
 | Relay operator reads vault | All vault payloads are AES-256-GCM encrypted; relay sees only ciphertext |
 | Network eavesdropper | Same — end-to-end encrypted before hitting the relay |
 | Stolen device | Vault file is encrypted with vault master key (Argon2id KDF from master password); without master password it is unreadable |
+| Stolen device with biometric unlock enabled | Biometric unlock wraps a session key stored in OS secure enclave (Secure Enclave / Android StrongBox); the master key is never derived from biometrics alone — biometric auth gates access to an OS-held key blob that decrypts the vault key |
+| Biometric spoofing | Delegated entirely to the OS biometric stack (Face ID, Touch ID, Android BiometricPrompt); ZVault does not implement its own biometric matching |
 | Rogue/removed device tries to inject updates | All updates are signed by sender Nostr key and verified against the authorised device list |
 | Removed device reads future updates | Future messages are not encrypted for removed device's public key |
 | Relay replays old messages | Each message carries a monotonic `clock` (Lamport-style) and a `vault_version`; stale/replayed messages are ignored |
 | Man-in-the-middle on join flow | Out-of-band verification: device pubkeys are verified via QR code or manual fingerprint check before admission |
+| Audit log tampering | Each audit log entry is chained via HMAC; any deletion or modification breaks the chain and is detectable on next verification |
+| Import of malicious data | All imported items are validated against the VaultItem schema; unknown fields are dropped; no executable content is imported |
 
 ---
 
@@ -85,7 +89,29 @@ VaultItem {
 }
 ```
 
-### 4.3 DeviceEntry
+### 4.3 BiometricUnlockConfig
+
+Stored per-device in OS secure storage alongside the device keypair. Never written to the vault file or synced.
+
+```
+BiometricUnlockConfig {
+  enabled:           bool
+  // OS-specific key reference — not the key material itself
+  key_handle:        String        // Keychain item name / Keystore alias / Credential Manager target
+  wrapped_vault_key: [u8]          // AES-256-GCM encrypted vault key, wrapped by the OS-held biometric key
+  iv:                [u8; 12]      // IV used for the wrapping encryption
+  created_at:        timestamp
+  last_used_at:      Option<timestamp>
+}
+```
+
+The `wrapped_vault_key` is produced once when the user enables biometric unlock:
+1. OS generates a biometric-bound key in the secure enclave (never exportable)
+2. ZVault uses that OS key to AES-256-GCM encrypt the in-memory vault master key
+3. The ciphertext (`wrapped_vault_key`) is stored in OS secure storage
+4. On subsequent unlocks: biometric auth → OS releases the enclave key → ZVault decrypts `wrapped_vault_key` → vault master key in memory
+
+### 4.4 DeviceEntry
 
 ```
 DeviceEntry {
@@ -100,7 +126,7 @@ DeviceEntry {
 }
 ```
 
-### 4.4 On-disk vault file
+### 4.5 On-disk vault file
 
 The vault is stored as an opaque encrypted blob:
 
@@ -163,7 +189,66 @@ SyncMessage {
 
 ---
 
-## 6. Device Lifecycle
+## 6. Passphrase-less Unlock (Biometric)
+
+### 6.1 Goals
+
+- Allow users to unlock their vault with Face ID, Touch ID, or fingerprint instead of typing the master password every time.
+- Never weaken the cryptographic protection of the vault file itself.
+- Never transmit biometric data or biometric-derived keys off-device.
+- Remain opt-in; the vault is always fully accessible via the master password regardless of biometric state.
+
+### 6.2 Platform support
+
+| Platform | Mechanism | API |
+|---|---|---|
+| macOS | Touch ID / Apple Watch | `SecAccessControl` with `biometryAny` flag; key stored in Keychain |
+| Windows | Windows Hello (fingerprint / face / PIN) | DPAPI with Windows Hello credential; key stored in Credential Manager |
+| Linux desktop | Polkit / GNOME Keyring / KWallet | libsecret with user session unlock; biometric hardware-dependent |
+| Android | Fingerprint / Face unlock | `BiometricPrompt` + `KeyStore` with `setUserAuthenticationRequired(true)` |
+| iOS (future) | Face ID / Touch ID | `SecAccessControl` with `biometryAny`; key in Secure Enclave |
+| Browser extension | Delegates to desktop app via native messaging | Extension itself has no biometric capability |
+
+### 6.3 Unlock flow
+
+```
+User taps "Unlock with biometric"
+  → OS presents biometric challenge
+  → On success: OS releases enclave key
+  → ZVault: AES-256-GCM decrypt(wrapped_vault_key, enclave_key) → vault_master_key
+  → Vault file decrypted with vault_master_key
+  → Session begins; vault_master_key held in memory, zeroed on lock
+```
+
+### 6.4 Enabling biometric unlock
+
+Biometric unlock can only be enabled from an already-unlocked session (i.e., user has proven knowledge of master password in the current session):
+
+1. User opens Settings → Security → Enable biometric unlock
+2. App confirms master password one more time (anti-clickjacking)
+3. OS prompts for biometric enrolment confirmation
+4. OS generates a biometric-bound key in secure enclave (never exportable)
+5. ZVault encrypts current in-memory vault_master_key with enclave key → `wrapped_vault_key`
+6. `wrapped_vault_key` + `key_handle` stored in `BiometricUnlockConfig` in OS secure storage
+7. Feature is now active for subsequent unlocks
+
+### 6.5 Disabling / invalidation
+
+- User can explicitly disable biometric unlock in settings (clears `BiometricUnlockConfig`)
+- If OS reports biometric data changed (new fingerprint enrolled, Face ID re-configured), the wrapped key is invalidated by the OS — ZVault detects this and falls back to master password, prompting the user to re-enable biometric unlock
+- Revoking a device (section 6.4 of device lifecycle) also clears biometric config on that device
+- Master password change: ZVault re-wraps the new vault_master_key and updates `wrapped_vault_key`
+
+### 6.6 Security properties
+
+- The vault file remains protected by Argon2id + AES-256-GCM regardless of biometric state
+- A stolen encrypted vault file cannot be unlocked without either the master password or access to the specific device's secure enclave
+- Biometric unlock is strictly a convenience layer on top of the existing key hierarchy
+- `zvault-core` has a `BiometricUnlock` feature flag; platforms that do not support it compile it out
+
+---
+
+## 7. Device Lifecycle
 
 ### 6.1 First device (vault creation)
 
@@ -221,7 +306,7 @@ SyncMessage {
 
 ---
 
-## 7. Conflict Resolution
+## 8. Conflict Resolution
 
 Because devices can edit the vault offline simultaneously, conflicts must be resolved:
 
@@ -233,7 +318,7 @@ Because devices can edit the vault offline simultaneously, conflicts must be res
 
 ---
 
-## 8. Platform Architecture
+## 9. Platform Architecture
 
 ### 8.1 Core library (`zvault-core`)
 
@@ -278,7 +363,7 @@ A platform-agnostic Rust library that implements:
 
 ---
 
-## 9. Nostr Relay Strategy
+## 10. Nostr Relay Strategy
 
 - ZVault publishes to user-configured relays (defaults provided)
 - All vault sync events use `kind: 10050` (replaceable) or custom ephemeral kinds to avoid relay storage pollution
@@ -289,7 +374,7 @@ A platform-agnostic Rust library that implements:
 
 ---
 
-## 10. Project Structure (Monorepo)
+## 11. Project Structure (Monorepo)
 
 ```
 zvault/
@@ -325,7 +410,7 @@ zvault/
 
 ---
 
-## 11. Technology Stack
+## 12. Technology Stack
 
 | Layer | Technology | Rationale |
 |---|---|---|
@@ -342,7 +427,130 @@ zvault/
 
 ---
 
-## 12. Security Checklist
+## 13. Import / Export
+
+### 13.1 Goals
+
+- Allow users to migrate into ZVault from other password managers without manual re-entry.
+- Allow users to export their vault for backup or migration to another tool.
+- Never expose plaintext credentials to the filesystem longer than necessary.
+- Validate and sanitise all imported data to prevent injection or corruption.
+
+### 13.2 Supported import formats
+
+| Source | Format | Notes |
+|---|---|---|
+| Bitwarden | JSON (encrypted or unencrypted) | Primary target; schema is well-documented |
+| 1Password | 1PUX (zip of JSON) or CSV | 1PUX preferred; CSV as fallback |
+| LastPass | CSV | Limited field mapping; notes may lose structure |
+| KeePass | KDBX 3.x / 4.x | Via `keepass` crate or XML export |
+| Generic CSV | Configurable column mapping | Power-user escape hatch |
+| ZVault encrypted export | `.zvault-export` (see §13.4) | Round-trip backup format |
+
+### 13.3 Import flow
+
+1. User selects source format and provides the export file
+2. ZVault parses and validates the file in memory (never written to disk in plaintext)
+3. Items are mapped to `VaultItem` schema; unknown fields are dropped; no executable content is accepted
+4. User is shown a preview: item count by type, any items that failed mapping
+5. User confirms; items are merged into the vault (deduplication by name + URI match, user prompted on conflict)
+6. Vault is re-encrypted and saved; an audit log entry is written: `import: N items from <format>`
+7. The source file is not deleted by ZVault (user's responsibility)
+
+### 13.4 ZVault encrypted export format (`.zvault-export`)
+
+A portable, self-contained encrypted export file:
+
+```
+[magic: 8 bytes "ZVEXPORT"]
+[version: 2 bytes]
+[kdf_params: 64 bytes — Argon2id salt + params]
+[encrypted_payload: N bytes — AES-256-GCM(export_key, export_json)]
+[auth_tag: 16 bytes]
+```
+
+- `export_key` is derived from an **export passphrase** chosen by the user at export time (separate from the master password — this passphrase is what you store alongside the backup file)
+- `export_json` contains all vault items in full, plus metadata (vault ID, export timestamp)
+- Device-specific data (keypairs, biometric config) is **not** included in exports
+- Sync history and audit log are **not** included by default (opt-in flag)
+
+### 13.5 Plaintext export
+
+- Plaintext export (CSV or JSON) is available for interoperability but gated behind an explicit confirmation dialog warning the user
+- Plaintext exports are written to the OS temp directory, opened in the app, and the file is securely deleted (overwritten + unlinked) after the user acknowledges
+- Auto-fill never targets plaintext export files
+
+### 13.6 Security checklist for import/export
+
+- [ ] Source file parsed entirely in memory; never decrypted to disk
+- [ ] Imported strings validated: max field lengths enforced, no executable content
+- [ ] Export passphrase never stored; Argon2id KDF params stored in file header
+- [ ] Plaintext exports: temp file securely deleted after use
+- [ ] Import and export events written to audit log
+
+---
+
+## 14. Audit Log
+
+### 14.1 Goals
+
+- Provide a local, tamper-evident record of all security-relevant events.
+- Allow users to review what happened to their vault and detect unexpected access.
+- Keep the log on-device only; it is not synced via Nostr (each device has its own log).
+
+### 14.2 Logged events
+
+| Category | Events |
+|---|---|
+| Vault access | Unlock (success/failure), lock, session timeout |
+| Vault mutations | Item created, item updated, item deleted, vault re-keyed |
+| Device lifecycle | Device added, device revoked, device renamed |
+| Sync | Sync started, sync completed, conflict resolved, rejected message (bad signature / stale clock) |
+| Import / Export | Import completed (source, item count), export created (format), plaintext export created |
+| Biometric | Biometric unlock enabled, disabled, invalidated by OS |
+| Auth | Master password changed, biometric auth success, biometric auth failure |
+
+### 14.3 Log entry schema
+
+```
+AuditEntry {
+  seq:        u64           // monotonically increasing per device
+  timestamp:  timestamp     // UTC
+  device_id:  UUID          // which device generated this entry
+  event:      EventKind     // enum (see table above)
+  detail:     String        // human-readable summary (no plaintext credentials)
+  prev_hmac:  [u8; 32]      // HMAC-SHA256 of previous entry (chain link)
+  hmac:       [u8; 32]      // HMAC-SHA256(chain_key, seq || timestamp || event || detail || prev_hmac)
+}
+```
+
+### 14.4 Tamper evidence
+
+The log uses a **hash chain** (similar to a blockchain without consensus):
+
+- Each entry's `hmac` covers its own content plus the `prev_hmac` of the previous entry
+- The `chain_key` is derived from the vault master key via HKDF: `HKDF(vault_master_key, "audit_chain_key")`
+- Deleting, reordering, or modifying any entry breaks all subsequent HMACs
+- ZVault verifies the chain on startup and on demand; any break is surfaced as a warning
+- Because the chain key is derived from the vault master key, an attacker who can read the vault file could in theory recompute valid HMACs — but they would need the master password first, which means it's not a weaker guarantee than the vault itself
+
+### 14.5 Storage
+
+- The audit log is stored in a separate file alongside the vault: `<vault_name>.audit`
+- The file uses the same AES-256-GCM encryption as the vault file (same master key)
+- The log is append-only from the application's perspective; no UI operation deletes log entries
+- Log rotation: entries older than 90 days (configurable) are archived to `<vault_name>.audit.archive.<YYYY-MM>` and compressed; the active log keeps the last entry of the archived batch for chain continuity
+
+### 14.6 UI
+
+- Audit log viewer available in Settings → Security → Audit Log
+- Filterable by date range, event category, device
+- "Verify chain integrity" button triggers a full HMAC chain check
+- Export audit log as encrypted `.zvault-export` (audit flag set) or plaintext CSV (same warnings as §13.5)
+
+---
+
+## 15. Security Checklist
 
 - [ ] Master password never stored; only the derived key (held in memory, zeroed on lock)
 - [ ] Vault file always encrypted at rest; never written in plaintext
@@ -362,20 +570,178 @@ zvault/
 
 ---
 
-## 13. Open Questions / Future Work
+## 16. Development Plan
 
-1. **iOS client** — architecture is the same as Android (UniFFI + Swift), deferred to v2
-2. **Field-level CRDT** — Automerge integration for true merge semantics on concurrent edits
-3. **Emergency re-key UX** — needs careful UX design; currently a power-user feature
-4. **Relay discovery** — how do new devices find relays if join happens before relay list is synced? (Proposal: embed relay hints in invite link)
-5. **Passphrase-less unlock** — biometric unlock (Face ID, fingerprint) as an alternative to master password on mobile
-6. **Organisation/shared vaults** — multi-user shared vault with role-based access; requires group encryption key scheme
-7. **Import/export** — Bitwarden JSON, 1Password, LastPass, CSV import; encrypted export
-8. **Audit log** — local tamper-evident log of vault access and sync events
+### 16.1 Guiding principles
+
+- **Core-first:** `zvault-core` must be feature-complete and well-tested before any UI surface is built on top of it.
+- **Desktop-first UI:** the Tauri desktop app is the primary v1 client; Android and browser extension follow.
+- **Vertical slices:** each phase ships a working end-to-end slice (create vault → unlock → use) rather than all-or-nothing.
+- **Security review at each milestone:** crypto and auth code reviewed before building on top of it.
+
+### 16.2 Milestones overview
+
+| Milestone | Name | Deliverable |
+|---|---|---|
+| M0 | Foundation | Repo, CI, dependency audit, workspace scaffold |
+| M1 | Core crypto | Vault encrypt/decrypt, Argon2id KDF, AES-256-GCM |
+| M2 | Vault data model | Full CRUD on vault items, serialisation, on-disk format |
+| M3 | Device lifecycle | Keypair generation, device admit/revoke, CRDT device list |
+| M4 | Nostr sync | NIP-44 message encryption, gift-wrap, relay pub/sub, conflict resolution |
+| M5 | Desktop app shell | Tauri app with React, vault create/unlock/lock, item list/edit/delete |
+| M6 | Biometric unlock | Keychain integration, BiometricUnlock feature on desktop + Android |
+| M7 | Import / Export | Bitwarden JSON, 1Password 1PUX, CSV, `.zvault-export` encrypted backup |
+| M8 | Audit log | AuditEntry schema, hash chain, storage, chain verification, UI viewer |
+| M9 | Browser extension | WXT extension, WASM core, auto-fill content scripts |
+| M10 | Android app | UniFFI bindings, Compose UI, Android Keystore, AutofillService |
+| M11 | CLI tool | `zvault-cli` wrapping core; stdin/env password; scripting support |
+| M12 | Hardening & release | Penetration test, `cargo audit`, fuzz testing, documentation, v1.0 tag |
+
+### 16.3 Phase detail
+
+#### Phase 1 — Core (M0–M4) — estimated 10–14 weeks
+
+**M0 · Foundation (1 week)**
+- Initialise Cargo workspace with `zvault-core`, `zvault-cli` crates
+- Set up CI: `cargo test`, `cargo clippy`, `cargo audit`, `cargo fmt` on every PR
+- Pin all dependencies; add Dependabot
+- Establish `CONTRIBUTING.md`, branch protection, PR template
+
+**M1 · Core crypto (2 weeks)**
+- `crypto` module: Argon2id KDF, AES-256-GCM encrypt/decrypt, `zeroize` for key material
+- On-disk vault format: magic bytes, KDF params header, encrypted payload, auth tag
+- 100% unit test coverage on all crypto paths; property-based tests via `proptest`
+- Security review of crypto module before proceeding
+
+**M2 · Vault data model (2 weeks)**
+- `vault` module: `Vault`, `VaultItem` (Login, SecureNote, Card, Identity), `DeviceEntry`
+- `BiometricUnlockConfig` struct (data only; integration in M6)
+- Serialisation: JSON (human-readable) + MessagePack (compact wire format)
+- CRUD operations; version increment on write; `updated_at` tracking
+
+**M3 · Device lifecycle (2 weeks)**
+- `device` module: keypair generation, secp256k1 via `k256` crate
+- Secure storage abstraction (`keyring` crate); platform backends: macOS/Windows/Linux
+- Device admit flow (VaultInvite), revoke flow, OR-Set CRDT for device list
+- Invite link generation and parsing (`zvault://join/...`)
+
+**M4 · Nostr sync (3 weeks)**
+- `nostr` module: NIP-01 event construction and signing, NIP-44 encryption, NIP-59 gift-wrap
+- `sync` module: full vault and delta sync, Lamport clock, version validation
+- Relay WebSocket client (connect, publish, subscribe, reconnect)
+- Conflict resolution: LWW for items, OR-Set for devices
+- Integration tests: two-device sync round-trip against a local relay (e.g., `nostr-rs-relay` in Docker)
+
+#### Phase 2 — Desktop App (M5–M8) — estimated 8–10 weeks
+
+**M5 · Desktop app shell (3 weeks)**
+- Tauri v2 project scaffold; Tauri commands for all `zvault-core` operations
+- React + TypeScript UI: vault create wizard, master password unlock screen, item list, item detail/edit, device management
+- OS keychain integration for device keypair
+- Session lock / inactivity timeout
+
+**M6 · Biometric unlock (2 weeks)**
+- macOS: `SecAccessControl` + Touch ID gated Keychain item
+- Windows: DPAPI + Windows Hello
+- Linux: libsecret session unlock (best-effort)
+- `BiometricUnlockConfig` persistence; enable/disable flow; OS invalidation handling
+- Android implementation deferred to M10
+
+**M7 · Import / Export (2 weeks)**
+- Import parsers: Bitwarden JSON, 1Password 1PUX, LastPass CSV, KeePass XML, generic CSV
+- Schema validation and field mapping; conflict preview UI
+- `.zvault-export` encrypted export writer and reader
+- Plaintext CSV/JSON export with temp-file secure deletion
+- Audit log entries for import/export events
+
+**M8 · Audit log (1 week)**
+- `AuditEntry` schema; HMAC-SHA256 hash chain; `chain_key` via HKDF from vault master key
+- Append-only log storage (`<vault>.audit`) with same encryption as vault
+- Chain verification on startup; warning UI on chain break
+- Audit log viewer in Settings: filter by date/event/device, verify chain button
+- Log rotation: archive entries older than 90 days
+
+#### Phase 3 — Additional Clients (M9–M11) — estimated 10–14 weeks
+
+**M9 · Browser extension (4 weeks)**
+- WXT project scaffold; `wasm-pack` build of `zvault-core` to WASM
+- Popup UI: unlock, item search, copy username/password
+- Content scripts: auto-fill on login form focus; URI match before inject; HTTPS-only
+- Native messaging bridge to desktop app (optional, for keychain delegation)
+- Chrome MV3 target first; Firefox port; Safari via Xcode
+
+**M10 · Android app (4 weeks)**
+- UniFFI binding generation for `zvault-core`
+- Kotlin / Jetpack Compose UI: unlock, item list, item detail, device management
+- Android Keystore biometric unlock (completes M6 for Android)
+- AutofillService integration
+- WorkManager background sync
+- APK build via GitHub Actions
+
+**M11 · CLI tool (2 weeks)**
+- `zvault-cli`: clap-based subcommands: `unlock`, `lock`, `list`, `get`, `add`, `edit`, `delete`, `devices`, `sync`, `import`, `export`, `audit`
+- Master password via interactive prompt or `ZVAULT_PASSWORD` env var (CI)
+- Machine-readable output (`--json` flag)
+- Shell completion scripts (bash, zsh, fish)
+
+#### Phase 4 — Hardening & Release (M12) — estimated 4 weeks
+
+**M12 · Hardening & v1.0 (4 weeks)**
+- Penetration test / security review of full application
+- Fuzz testing: vault parser, import parsers, Nostr message handler (`cargo-fuzz`)
+- `cargo audit` clean; all dependencies reviewed
+- Performance profiling: Argon2id params tuned per platform
+- End-to-end tests: full sync flow, import round-trip, biometric unlock flow
+- User documentation, README, CHANGELOG
+- v1.0 tag and release artefacts (desktop installers, extension store submission, APK)
+
+### 16.4 Estimated timeline
+
+```
+Week:  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36
+M0:    ██
+M1:       ████
+M2:           ████
+M3:               ████
+M4:                   ██████
+M5:                               ██████
+M6:                                     ████
+M7:                                         ████
+M8:                                             ██
+M9:                                               ████████
+M10:                                                      ████████
+M11:                                                              ████
+M12:                                                                  ████████
+```
+
+Total estimated duration: **32–36 weeks** (one engineer full-time; can be parallelised across multiple engineers at Phase 2/3).
+
+### 16.5 Definition of done per milestone
+
+A milestone is complete when:
+1. All features described above are implemented
+2. Unit tests pass (`cargo test --workspace`)
+3. No `clippy` warnings
+4. `cargo audit` reports no vulnerabilities
+5. Relevant integration tests pass
+6. A PR has been reviewed and merged to `main`
+7. DESIGN.md updated to reflect any design decisions made during implementation
 
 ---
 
-## 14. Lessons Learned / Design Decisions Log
+## 17. Open Questions / Future Work
+
+The following items are **deferred** — they are not required for v1 but are tracked here for future planning.
+
+1. **iOS client** — architecture is the same as Android (UniFFI + Swift), deferred to v2
+2. **Field-level CRDT** — Automerge integration for true merge semantics on concurrent edits; v1 uses LWW at item granularity
+3. **Emergency re-key UX** — needs careful UX design; currently a power-user feature
+4. **Relay discovery** — how do new devices find relays if join happens before relay list is synced? (Proposal: embed relay hints in invite link)
+5. **Organisation/shared vaults** — multi-user shared vault with role-based access; requires group encryption key scheme
+
+---
+
+## 18. Lessons Learned / Design Decisions Log
 
 ### Why Nostr instead of a custom sync server?
 
