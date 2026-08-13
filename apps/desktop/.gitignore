@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Tauri build
+src-tauri/target/
+
+# Environment
+.env
+.env.local
