@@ -1,0 +1,48 @@
+# ── Rust ─────────────────────────────────────────────────────────────────────
+/target
+**/*.rs.bk
+# Cargo.lock is intentionally tracked — this is a binary workspace.
+
+# ── Node / Tauri / WXT ───────────────────────────────────────────────────────
+node_modules/
+dist/
+.env
+.env.local
+*.local
+
+# ── Android ──────────────────────────────────────────────────────────────────
+*.apk
+*.aab
+*.dex
+.gradle/
+local.properties
+apps/android/app/build/
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.idea/
+# Keep .vscode/extensions.json for workspace extension recommendations.
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Secrets (NEVER commit these) ─────────────────────────────────────────────
+*.pem
+*.key
+*.p12
+*.keystore
+secrets.json
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+
+# ── Coverage ─────────────────────────────────────────────────────────────────
+lcov.info
+coverage/
+
+# ── Temp / backup ────────────────────────────────────────────────────────────
+*.tmp
+*.bak

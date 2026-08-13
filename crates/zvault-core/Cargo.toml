@@ -1,0 +1,43 @@
+[package]
+name        = "zvault-core"
+description = "Core library for ZVault — cryptography, data model, sync engine"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["biometric"]
+# Compile out biometric unlock on platforms that don't support it
+biometric = []
+
+[dependencies]
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+rmp-serde    = { workspace = true }
+argon2       = { workspace = true }
+aes-gcm      = { workspace = true }
+rand         = { workspace = true }
+rand_core    = { workspace = true }
+zeroize      = { workspace = true }
+k256         = { workspace = true }
+sha2         = { workspace = true }
+hmac         = { workspace = true }
+hkdf         = { workspace = true }
+hex          = { workspace = true }
+totp-rs      = { workspace = true }
+tokio        = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+uuid         = { workspace = true }
+chrono       = { workspace = true }
+thiserror    = { workspace = true }
+anyhow       = { workspace = true }
+base64       = { workspace = true }
+tracing      = { workspace = true }
+
+[dev-dependencies]
+proptest     = { workspace = true }
+tokio        = { workspace = true }
