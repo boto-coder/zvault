@@ -107,7 +107,7 @@ See [DESIGN.md](./DESIGN.md) for the full threat model, cryptographic design, an
 
 ## Development Status
 
-**M0 — Foundation** is complete. Currently working on **M1 — Core Crypto** (Argon2id KDF, AES-256-GCM). See [DESIGN.md §16](./DESIGN.md) for the full milestone plan.
+**M0 — Foundation** and **M1 — Core Crypto** (Argon2id KDF, AES-256-GCM) are complete. Currently working on **M2 — Vault Data Model** (CRUD, serialisation, on-disk format). See [DESIGN.md §16](./DESIGN.md) for the full milestone plan.
 
 ---
 

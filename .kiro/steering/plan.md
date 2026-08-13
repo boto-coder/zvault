@@ -2,14 +2,14 @@
 
 ## Current status
 
-Design phase complete. Development not yet started.
+M0 and M1 complete. Starting M2.
 
 ## Milestone overview
 
 | Milestone | Name | Status |
 |---|---|---|
-| M0 | Foundation — repo, CI, workspace scaffold | 🔲 Not started |
-| M1 | Core crypto — Argon2id KDF, AES-256-GCM | 🔲 Not started |
+| M0 | Foundation — repo, CI, workspace scaffold | ✅ Done |
+| M1 | Core crypto — Argon2id KDF, AES-256-GCM | ✅ Done |
 | M2 | Vault data model — CRUD, serialisation, on-disk format | 🔲 Not started |
 | M3 | Device lifecycle — keypair, admit/revoke, CRDT | 🔲 Not started |
 | M4 | Nostr sync — NIP-44/59, relay pub/sub, conflict resolution | 🔲 Not started |
@@ -48,10 +48,45 @@ Design phase complete. Development not yet started.
 - Vertical slices: each phase ships a working end-to-end slice
 - Security review at each milestone before proceeding
 
-## Current milestone: M0
+## Current milestone: M2
 
-Next actions:
-1. Initialise Cargo workspace (`zvault-core`, `zvault-cli` crates)
-2. Set up GitHub Actions CI pipeline
-3. Add Dependabot and pin all dependencies
-4. Write CONTRIBUTING.md, branch protection rules, PR template
+### M2 scope
+- `Vault` CRUD: `add_item`, `update_item`, `delete_item`, `get_item`, `list_items`
+- Vault serialisation: JSON (serde) + on-disk encryption via M1 crypto
+- `VaultFile` struct: combines `Vault` model + header (magic, KDF params, encrypted payload)
+- `VaultFile::create(password, path)` and `VaultFile::open(password, path)` high-level API
+- `VaultFile::rekey(old_password, new_password)` — re-encrypt with fresh salt
+- Round-trip tests: create → write to tempfile → read back → verify items
+- Password mismatch test; corrupt-file test
+
+### M2 next actions
+1. Implement CRUD methods on `Vault` (currently stubbed in `vault/mod.rs`)
+2. Implement `vault_file.rs` with the on-disk read/write API (uses `crate::crypto`)
+3. Write integration tests in `crates/zvault-core/tests/`
+4. Update DESIGN.md §16 if any design decisions are made
+
+## Completed milestones
+
+### M0 — Foundation (complete)
+- Cargo workspace (`zvault-core`, `zvault-cli`)
+- GitHub Actions CI (`cargo test`, `cargo clippy`, `cargo audit`, `cargo fmt`)
+- Dependabot, PR template, issue templates
+- All module stubs with doc comments and `todo!("Mx")` markers
+- DESIGN.md full architecture and threat model
+- CONTRIBUTING.md, branch protection rules
+
+### M1 — Core Crypto (complete, commit 6075ad1)
+Delivered:
+- `VaultKey` newtype wrapping `Zeroizing<[u8; 32]>` — key material zeroed on drop
+- `KdfParams` struct: salt (32 bytes) + `m_cost`/`t_cost`/`p_cost`; binary and JSON serde
+- `derive_key(password, &KdfParams) -> Result<VaultKey>` — Argon2id RFC 9106
+- `encrypt(key, plaintext) -> Result<Vec<u8>>` — AES-256-GCM, fresh 12-byte IV per write
+- `encrypt_with_params(key, plaintext, &KdfParams) -> Result<Vec<u8>>` — for rekey / testing
+- `decrypt(key, blob) -> Result<Vec<u8>>` — authenticates header + ciphertext via GCM tag
+- 21 tests: all pass, 0 clippy warnings
+
+On-disk format (64-byte header):
+```
+magic(8) | salt(32) | m_cost_le(4) | t_cost_le(4) | p_cost_le(4) | iv(12) | ct | tag(16)
+```
+The full header (magic + KDF params + IV) is included in AES-GCM AAD, so any tampering with the header is detected during authentication.
