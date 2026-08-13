@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use uuid::Uuid;
+use zeroize::Zeroize;
 use zvault_core::vault::{ItemKind, VaultFile, VaultItem};
 
 // ─── CLI definition ──────────────────────────────────────────────────────────
@@ -180,10 +181,16 @@ enum DeviceAction {
 // ─── Password helpers ────────────────────────────────────────────────────────
 
 /// Get the master password from environment or interactive prompt.
+///
+/// If `ZVAULT_PASSWORD` is set, it is consumed (removed from the environment)
+/// to reduce the window of exposure.  The returned `String` should be zeroed
+/// by the caller after use (see command functions).
 fn get_password(prompt: &str) -> Result<String> {
     // Check ZVAULT_PASSWORD env var first (for CI/scripting).
     if let Ok(pw) = std::env::var("ZVAULT_PASSWORD") {
         if !pw.is_empty() {
+            // Remove from environment to prevent child-process leakage.
+            std::env::remove_var("ZVAULT_PASSWORD");
             return Ok(pw);
         }
     }
@@ -191,18 +198,23 @@ fn get_password(prompt: &str) -> Result<String> {
 }
 
 /// Get a new password with confirmation.
+///
+/// Same env-var clearing semantics as [`get_password`].
 fn get_new_password(prompt: &str) -> Result<String> {
     if let Ok(pw) = std::env::var("ZVAULT_PASSWORD") {
         if !pw.is_empty() {
+            std::env::remove_var("ZVAULT_PASSWORD");
             return Ok(pw);
         }
     }
     let pw = rpassword::prompt_password(prompt).context("failed to read password")?;
-    let confirm =
+    let mut confirm =
         rpassword::prompt_password("Confirm password: ").context("failed to read confirmation")?;
     if pw != confirm {
+        confirm.zeroize();
         bail!("passwords do not match");
     }
+    confirm.zeroize();
     Ok(pw)
 }
 
@@ -342,12 +354,15 @@ fn cmd_init(path: PathBuf) -> Result<()> {
         bail!("file already exists: {}", path.display());
     }
 
-    let password = get_new_password("Enter master password: ")?;
+    let mut password = get_new_password("Enter master password: ")?;
     if password.is_empty() {
+        password.zeroize();
         bail!("password cannot be empty");
     }
 
-    let (_vf, _key) = VaultFile::create(&password, &path).context("failed to create vault file")?;
+    let result = VaultFile::create(&password, &path).context("failed to create vault file");
+    password.zeroize();
+    let (_vf, _key) = result?;
 
     println!("✓ Vault created at {}", path.display());
     Ok(())
@@ -358,9 +373,11 @@ fn cmd_unlock(path: PathBuf) -> Result<()> {
         bail!("vault file not found: {}", path.display());
     }
 
-    let password = get_password("Enter master password: ")?;
-    let (_vf, _key, vault) =
-        VaultFile::open(&password, &path).context("failed to unlock vault (wrong password?)")?;
+    let mut password = get_password("Enter master password: ")?;
+    let result =
+        VaultFile::open(&password, &path).context("failed to unlock vault (wrong password?)");
+    password.zeroize();
+    let (_vf, _key, vault) = result?;
 
     println!("✓ Vault unlocked successfully");
     println!("  Items: {}", vault.items.len());
@@ -377,9 +394,10 @@ fn cmd_lock() -> Result<()> {
 }
 
 fn cmd_list(vault_path: PathBuf, _show_password: bool) -> Result<()> {
-    let password = get_password("Enter master password: ")?;
-    let (_vf, _key, vault) =
-        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (_vf, _key, vault) = result?;
 
     let items = vault.list_items();
     if items.is_empty() {
@@ -403,9 +421,10 @@ fn cmd_list(vault_path: PathBuf, _show_password: bool) -> Result<()> {
 
 fn cmd_get(vault_path: PathBuf, id_str: String, show_password: bool) -> Result<()> {
     let id = Uuid::parse_str(&id_str).context("invalid UUID format")?;
-    let password = get_password("Enter master password: ")?;
-    let (_vf, _key, vault) =
-        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (_vf, _key, vault) = result?;
 
     match vault.get_item(id) {
         Some(item) => {
@@ -419,9 +438,10 @@ fn cmd_get(vault_path: PathBuf, id_str: String, show_password: bool) -> Result<(
 }
 
 fn cmd_add(vault_path: PathBuf) -> Result<()> {
-    let password = get_password("Enter master password: ")?;
-    let (vf, key, mut vault) =
-        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (vf, key, mut vault) = result?;
 
     // Prompt for item kind.
     println!("Item types: login, note, card, identity");
@@ -486,9 +506,10 @@ fn cmd_add(vault_path: PathBuf) -> Result<()> {
 
 fn cmd_edit(vault_path: PathBuf, id_str: String) -> Result<()> {
     let id = Uuid::parse_str(&id_str).context("invalid UUID format")?;
-    let password = get_password("Enter master password: ")?;
-    let (vf, key, mut vault) =
-        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (vf, key, mut vault) = result?;
 
     let existing = vault
         .get_item(id)
@@ -617,9 +638,10 @@ fn cmd_edit(vault_path: PathBuf, id_str: String) -> Result<()> {
 
 fn cmd_delete(vault_path: PathBuf, id_str: String, yes: bool) -> Result<()> {
     let id = Uuid::parse_str(&id_str).context("invalid UUID format")?;
-    let password = get_password("Enter master password: ")?;
-    let (vf, key, mut vault) =
-        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (vf, key, mut vault) = result?;
 
     // Verify item exists and show its name.
     let item_name = vault
@@ -648,35 +670,50 @@ fn cmd_rekey(vault_path: PathBuf) -> Result<()> {
         bail!("vault file not found: {}", vault_path.display());
     }
 
-    let old_password = get_password("Enter current master password: ")?;
-    let new_password = get_new_password("Enter new master password: ")?;
+    let mut old_password = get_password("Enter current master password: ")?;
+    let mut new_password = get_new_password("Enter new master password: ")?;
     if new_password.is_empty() {
+        old_password.zeroize();
+        new_password.zeroize();
         bail!("new password cannot be empty");
     }
 
     // Open vault with old password to verify it first.
-    let (vf, _key, _vault) = VaultFile::open(&old_password, &vault_path)
-        .context("failed to unlock with current password")?;
+    let open_result = VaultFile::open(&old_password, &vault_path)
+        .context("failed to unlock with current password");
+    let (vf, _key, _vault) = match open_result {
+        Ok(v) => v,
+        Err(e) => {
+            old_password.zeroize();
+            new_password.zeroize();
+            return Err(e);
+        }
+    };
 
     // Rekey the vault file.
-    let (_new_vf, _new_key, _new_vault) = vf
+    let rekey_result = vf
         .rekey(&old_password, &new_password)
-        .context("failed to rekey vault")?;
+        .context("failed to rekey vault");
+    old_password.zeroize();
+    new_password.zeroize();
+    let (_new_vf, _new_key, _new_vault) = rekey_result?;
 
     println!("✓ Master password changed successfully");
     Ok(())
 }
 
 fn cmd_export(vault_path: PathBuf, format: ExportFormat, output: PathBuf) -> Result<()> {
-    let password = get_password("Enter master password: ")?;
-    let (_vf, _key, vault) =
-        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (_vf, _key, vault) = result?;
 
     match format {
         ExportFormat::Json => {
             let json = serde_json::to_string_pretty(&vault)
                 .context("failed to serialise vault to JSON")?;
-            std::fs::write(&output, json).context("failed to write export file")?;
+            write_restricted_file(&output, json.as_bytes())
+                .context("failed to write export file")?;
             println!(
                 "✓ Exported {} item(s) to {} (JSON)",
                 vault.items.len(),
@@ -702,7 +739,8 @@ fn cmd_export(vault_path: PathBuf, format: ExportFormat, output: PathBuf) -> Res
                     csv_escape(notes),
                 ));
             }
-            std::fs::write(&output, csv_output).context("failed to write export file")?;
+            write_restricted_file(&output, csv_output.as_bytes())
+                .context("failed to write export file")?;
             println!(
                 "✓ Exported {} item(s) to {} (CSV)",
                 vault.items.len(),
@@ -711,12 +749,15 @@ fn cmd_export(vault_path: PathBuf, format: ExportFormat, output: PathBuf) -> Res
         }
         ExportFormat::ZvaultExport => {
             // Encrypted export: create a new vault file at the output path.
-            let export_password = get_new_password("Enter export password: ")?;
+            let mut export_password = get_new_password("Enter export password: ")?;
             if export_password.is_empty() {
+                export_password.zeroize();
                 bail!("export password cannot be empty");
             }
-            let (vf_export, key_export) = VaultFile::create(&export_password, &output)
-                .context("failed to create export file")?;
+            let create_result = VaultFile::create(&export_password, &output)
+                .context("failed to create export file");
+            export_password.zeroize();
+            let (vf_export, key_export) = create_result?;
             // Save the full vault data into the export file.
             vf_export
                 .save(&key_export, &vault)
@@ -732,9 +773,10 @@ fn cmd_export(vault_path: PathBuf, format: ExportFormat, output: PathBuf) -> Res
 }
 
 fn cmd_import(vault_path: PathBuf, format: ImportFormat, input: PathBuf) -> Result<()> {
-    let password = get_password("Enter master password: ")?;
-    let (vf, key, mut vault) =
-        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (vf, key, mut vault) = result?;
 
     let content = std::fs::read_to_string(&input).context("failed to read import file")?;
 
@@ -921,9 +963,10 @@ fn cmd_import(vault_path: PathBuf, format: ImportFormat, input: PathBuf) -> Resu
 }
 
 fn cmd_devices(vault_path: PathBuf) -> Result<()> {
-    let password = get_password("Enter master password: ")?;
-    let (_vf, _key, vault) =
-        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (_vf, _key, vault) = result?;
 
     if vault.devices.is_empty() {
         println!("No devices registered.");
@@ -947,9 +990,10 @@ fn cmd_devices(vault_path: PathBuf) -> Result<()> {
 }
 
 fn cmd_device_admit(vault_path: PathBuf, label: String) -> Result<()> {
-    let password = get_password("Enter master password: ")?;
-    let (vf, key, mut vault) =
-        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (vf, key, mut vault) = result?;
 
     let now = chrono::Utc::now();
     let device_id = Uuid::new_v4();
@@ -982,9 +1026,10 @@ fn cmd_device_admit(vault_path: PathBuf, label: String) -> Result<()> {
 
 fn cmd_device_revoke(vault_path: PathBuf, id_str: String) -> Result<()> {
     let id = Uuid::parse_str(&id_str).context("invalid UUID format")?;
-    let password = get_password("Enter master password: ")?;
-    let (vf, key, mut vault) =
-        VaultFile::open(&password, &vault_path).context("failed to open vault")?;
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (vf, key, mut vault) = result?;
 
     let entry = vault
         .devices
@@ -1011,6 +1056,35 @@ fn cmd_device_revoke(vault_path: PathBuf, id_str: String) -> Result<()> {
 }
 
 // ─── CSV helpers ─────────────────────────────────────────────────────────────
+
+/// Write data to a file with restrictive permissions (owner-only: 0600).
+///
+/// This is used for plaintext exports (JSON, CSV) to prevent other users on the
+/// system from reading the exported credentials.
+#[cfg(unix)]
+fn write_restricted_file(path: &std::path::Path, data: &[u8]) -> Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .context("failed to create export file with restricted permissions")?;
+    file.write_all(data)?;
+    file.flush()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_restricted_file(path: &std::path::Path, data: &[u8]) -> Result<()> {
+    // On non-Unix (Windows), write normally; Windows ACLs default to
+    // owner-only for user-profile directories.
+    std::fs::write(path, data)?;
+    Ok(())
+}
 
 /// Escape a CSV field (wrap in quotes if it contains comma, quote, or newline).
 fn csv_escape(field: &str) -> String {

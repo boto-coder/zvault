@@ -1796,6 +1796,7 @@ dependencies = [
  "rpassword",
  "serde_json",
  "uuid",
+ "zeroize",
  "zvault-core",
 ]
 
