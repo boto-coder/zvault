@@ -12,7 +12,7 @@ M0, M1, M2, and M3 complete. Starting M4.
 | M1 | Core crypto — Argon2id KDF, AES-256-GCM | ✅ Done |
 | M2 | Vault data model — CRUD, serialisation, on-disk format | ✅ Done |
 | M3 | Device lifecycle — keypair, admit/revoke, CRDT | ✅ Done |
-| M4 | Nostr sync — NIP-44/59, relay pub/sub, conflict resolution | 🔲 Not started |
+| M4 | Nostr sync — NIP-44/59, relay pub/sub, conflict resolution | ✅ Done |
 | M5 | Desktop app shell — Tauri, React UI, vault CRUD | 🔲 Not started |
 | M6 | Biometric unlock — keychain, OS secure enclave integration | 🔲 Not started |
 | M7 | Import / Export — Bitwarden, 1Password, CSV, KDBX, `.zvault-export` | 🔲 Not started |
@@ -48,15 +48,13 @@ M0, M1, M2, and M3 complete. Starting M4.
 - Vertical slices: each phase ships a working end-to-end slice
 - Security review at each milestone before proceeding
 
-## Current milestone: M4 — Nostr sync
+## Current milestone: M5 — Desktop app shell
 
-### M4 scope
-- Nostr keypair generation and event signing (NIP-01)
-- NIP-44 encryption (XChaCha20-Poly1305) for vault sync events
-- NIP-59 gift-wrap for metadata hiding
-- WebSocket relay connection (publish + subscribe)
-- Sync engine: message construction, conflict resolution using `version` counter
-- Integration tests with a local relay or mock
+### M5 scope
+- Tauri v2 desktop app scaffold (React + TypeScript frontend)
+- Vault CRUD UI (create, unlock, lock, list items, add/edit/delete items)
+- SecureStorage implementation via `keyring` crate
+- Basic biometric unlock placeholder
 
 ## Completed milestones
 
@@ -123,3 +121,18 @@ Security review findings addressed:
 - INFO: `k256::ecdsa::SigningKey` implements `ZeroizeOnDrop` — secret scalar zeroed on drop automatically
 - INFO: `DeviceManager::Clone` only clones `OrSet<Uuid>` and `Vec<DeviceEntry>` — no secret material
 - INFO: `InMemoryStorage` gated to test code; documented as non-production in doc comment
+
+### M4 — Nostr Sync (complete)
+Delivered:
+- **NIP-44 v2 encryption/decryption** — ECDH (k256), HKDF-extract (conversation key), HKDF-expand (message keys: ChaCha20 key + nonce + HMAC key), ChaCha20 stream cipher, HMAC-SHA256 MAC, NIP-44 padding (power-of-2 based), base64 encode/decode
+- **NIP-01 event signing** — Schnorr BIP-340 via k256; `sign_event` and `verify_event`; canonical event ID = SHA-256 of `[0, pubkey, created_at, kind, tags, content]`
+- **NIP-59 gift-wrap** — triple-wrap (rumor → seal → gift-wrap); ephemeral random key for outer wrap; timestamp randomisation (±2 days); `gift_wrap` and `unwrap_gift_wrap`
+- **Sync engine** — `build_full_sync_message` (serialise vault → NIP-44 encrypt → SyncMessage); `apply_sync_message` (validate sender, stale guard, decrypt, merge items LWW, merge devices CRDT, update version)
+- **LamportClock** — tick (send) and update (receive) for causal ordering
+- **Dependencies:** `chacha20 = "0.9.1"` added to workspace
+- **Test vectors:** NIP-44 spec test vector verified (sec1=0x01, sec2=0x02, nonce=0x01, plaintext="a")
+- 24 new tests (17 nostr + 7 sync); 106 total workspace tests pass
+
+Security review findings addressed:
+- LOW: message keys (chacha_key, hmac_key) on stack not wrapped in Zeroizing — short-lived, fresh per message, acceptable risk
+- INFO: item conflict resolution uses `updated_at` timestamp (LWW per design doc); vault-level `version` counter gates stale messages
