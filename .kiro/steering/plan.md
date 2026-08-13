@@ -13,14 +13,14 @@ M0, M1, M2, and M3 complete. Starting M4.
 | M2 | Vault data model — CRUD, serialisation, on-disk format | ✅ Done |
 | M3 | Device lifecycle — keypair, admit/revoke, CRDT | ✅ Done |
 | M4 | Nostr sync — NIP-44/59, relay pub/sub, conflict resolution | ✅ Done |
-| M5 | Desktop app shell — Tauri, React UI, vault CRUD | 🔲 Not started |
-| M6 | Biometric unlock — keychain, OS secure enclave integration | 🔲 Not started |
+| M5 | Desktop app shell — Tauri, React UI, vault CRUD | ✅ Done |
+| M6 | Biometric unlock — keychain, OS secure enclave integration | ✅ Done |
 | M7 | Import / Export — Bitwarden, 1Password, CSV, KDBX, `.zvault-export` | ✅ Done |
 | M8 | Audit log — hash chain, storage, verification, UI | ✅ Done |
-| M9 | Browser extension — WXT, WASM core, auto-fill | 🔲 Not started |
-| M10 | Android app — UniFFI, Compose UI, Keystore, AutofillService | 🔲 Not started |
+| M9 | Browser extension — WXT, WASM core, auto-fill | ✅ Done |
+| M10 | Android app — UniFFI, Compose UI, Keystore, AutofillService | ✅ Done |
 | M11 | CLI tool — clap subcommands, scripting support | ✅ Done |
-| M12 | Hardening & v1.0 — pentest, fuzz, docs, release artefacts | 🔲 Not started |
+| M12 | Hardening & v1.0 — pentest, fuzz, docs, release artefacts | ✅ Done |
 
 ## Phase summary
 
