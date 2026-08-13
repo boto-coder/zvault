@@ -29,7 +29,7 @@ zeroize      = { version = "1.8.1", features = ["derive"] }
 k256         = { version = "0.13.4", features = ["ecdh", "schnorr"] }
 sha2         = { version = "0.10.9" }
 hmac         = { version = "0.12.1" }
-hkdf         = { version = "0.12.4" }
+hkdf         = { version = "0.13.0" }
 hex          = { version = "0.4.3" }
 
 # TOTP
