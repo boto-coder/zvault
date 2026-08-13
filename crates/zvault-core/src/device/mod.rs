@@ -1154,4 +1154,80 @@ mod tests {
         assert_eq!(dm2.live_devices().len(), 1);
         assert_eq!(dm2.live_devices()[0].device_id, m_admin.device_id);
     }
+
+    // ── Edge-case tests (security review) ─────────────────────────────────────
+
+    #[test]
+    fn or_set_merge_is_commutative() {
+        // A.merge(B) should produce the same live set as B.merge(A).
+        let mut a: OrSet<Uuid> = OrSet::new();
+        let mut b: OrSet<Uuid> = OrSet::new();
+
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let id3 = Uuid::new_v4();
+
+        // a has id1 and id2; b has id2 and id3.
+        a.add(id1);
+        let shared_token = Uuid::new_v4();
+        a.adds.push((id2, shared_token));
+        b.adds.push((id2, shared_token));
+        b.add(id3);
+
+        // a removes id2.
+        a.remove(&id2);
+
+        // Merge in both directions.
+        let mut ab = a.clone();
+        ab.merge(&b);
+
+        let mut ba = b.clone();
+        ba.merge(&a);
+
+        // Extract live elements.
+        let mut ab_elems: Vec<Uuid> = ab.elements().copied().collect();
+        let mut ba_elems: Vec<Uuid> = ba.elements().copied().collect();
+        ab_elems.sort();
+        ba_elems.sort();
+
+        assert_eq!(ab_elems, ba_elems, "OR-Set merge must be commutative");
+    }
+
+    #[test]
+    fn device_manager_merge_commutative() {
+        let (_, m_root, _) = new_device("Root");
+        let (_, m_a, _) = new_device("DevA");
+        let (_, m_b, _) = new_device("DevB");
+
+        let admin_identity = DeviceIdentity {
+            device_id: m_root.device_id,
+            pubkey_hex: m_root.pubkey_hex.clone(),
+        };
+
+        let mut dm_base = empty_dm();
+        dm_base.bootstrap(&m_root).expect("bootstrap");
+
+        let mut dm_x = dm_base.clone();
+        let mut dm_y = dm_base.clone();
+
+        dm_x.admit(&m_a, &admin_identity).expect("admit A on X");
+        dm_y.admit(&m_b, &admin_identity).expect("admit B on Y");
+
+        // Merge X into Y.
+        let mut xy = dm_x.clone();
+        xy.merge(&dm_y);
+
+        // Merge Y into X.
+        let mut yx = dm_y.clone();
+        yx.merge(&dm_x);
+
+        // Both should have the same set of live devices.
+        let mut xy_ids: Vec<Uuid> = xy.live_devices().iter().map(|e| e.device_id).collect();
+        let mut yx_ids: Vec<Uuid> = yx.live_devices().iter().map(|e| e.device_id).collect();
+        xy_ids.sort();
+        yx_ids.sort();
+
+        assert_eq!(xy_ids, yx_ids, "DeviceManager merge must be commutative");
+        assert_eq!(xy_ids.len(), 3); // root + A + B
+    }
 }

@@ -580,4 +580,37 @@ mod tests {
             "expected Serialisation error, got {err:?}"
         );
     }
+
+    // ── Edge-case tests (security review) ─────────────────────────────────────
+
+    #[test]
+    fn delete_item_preserves_order_of_remaining() {
+        // Verify that Vec::remove (not swap_remove) is used: order of remaining
+        // items must be stable after deletion.
+        let mut vault = Vault::new();
+        let a = login_item("A");
+        let b = login_item("B");
+        let c = login_item("C");
+        let d = login_item("D");
+
+        let id_a = a.id;
+        let id_b = b.id;
+        let id_c = c.id;
+        let id_d = d.id;
+
+        vault.add_item(a);
+        vault.add_item(b);
+        vault.add_item(c);
+        vault.add_item(d);
+
+        // Delete B (index 1).
+        vault.delete_item(id_b).unwrap();
+
+        // Remaining order must be [A, C, D] — NOT [A, D, C] (which swap_remove would produce).
+        let items = vault.list_items();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].id, id_a);
+        assert_eq!(items[1].id, id_c);
+        assert_eq!(items[2].id, id_d);
+    }
 }

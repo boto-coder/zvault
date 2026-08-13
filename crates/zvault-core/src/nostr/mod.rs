@@ -216,24 +216,11 @@ pub fn get_conversation_key(
     let shared_secret = diffie_hellman(sk.to_nonzero_scalar(), public_key.as_affine());
     let shared_x = shared_secret.raw_secret_bytes();
 
-    // HKDF-extract with salt = "nip44-v2".
-    let hk = Hkdf::<Sha256>::new(Some(NIP44_SALT), shared_x);
+    // NIP-44 spec: conversation_key = HKDF-extract(IKM=shared_x, salt="nip44-v2")
+    // HKDF-extract is defined as PRK = HMAC-Hash(salt, IKM).
+    // The hkdf crate's `new()` performs extract internally but doesn't expose
+    // the PRK directly in a convenient way, so we compute it manually.
     let mut conversation_key = Zeroizing::new([0u8; 32]);
-    // HKDF-extract output is the PRK — we just need the 32-byte extract output.
-    // hkdf crate: `new()` does extract, then we expand with empty info to get 32 bytes.
-    // Actually, per NIP-44 spec: conversation_key = HKDF-extract(IKM=shared_x, salt="nip44-v2")
-    // The hkdf crate's `new()` performs extract and stores the PRK internally.
-    // We need to get the PRK out. Use `into_prk()` or expand with empty info.
-    // The simplest way: the PRK itself IS the conversation key.
-    hk.expand(&[], conversation_key.as_mut_slice())
-        .map_err(|e| Error::Crypto(format!("HKDF expand failed: {e}")))?;
-
-    // Wait — re-reading the spec more carefully:
-    // "Use HKDF-extract with sha256, IKM=shared_x and salt=utf8_encode('nip44-v2')"
-    // "HKDF output will be a conversation_key between two users."
-    // This means the PRK from extract IS the conversation key.
-    // But the hkdf crate doesn't expose PRK directly in a nice way.
-    // Let's use the low-level approach: PRK = HMAC-SHA256(salt, IKM).
     let mut hmac_extract =
         Hmac::<Sha256>::new_from_slice(NIP44_SALT).expect("HMAC accepts any key size");
     hmac_extract.update(shared_x);
@@ -954,5 +941,122 @@ mod tests {
         // Wrong recipient should fail to unwrap.
         let result = unwrap_gift_wrap(&wrong_sk, &wrapped);
         assert!(result.is_err(), "wrong recipient must fail unwrap");
+    }
+
+    // ── Edge-case tests (security review) ─────────────────────────────────────
+
+    #[test]
+    fn nip44_tampered_mac_rejected() {
+        let sk_a = hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
+            .unwrap();
+        let sk_b_raw =
+            hex::decode("0000000000000000000000000000000000000000000000000000000000000002")
+                .unwrap();
+        let sk_b = SecretKey::from_slice(&sk_b_raw).unwrap();
+        let pub_b = secret_key_to_pubkey_hex(&sk_b);
+
+        let ck = get_conversation_key(&sk_a, &pub_b).unwrap();
+        let encrypted = nip44_encrypt(&ck, b"sensitive data").unwrap();
+
+        // Decode, tamper with the MAC, re-encode.
+        let mut data = BASE64.decode(&encrypted).unwrap();
+        let mac_start = data.len() - 32;
+        data[mac_start] ^= 0xFF; // flip a bit in the MAC
+        let tampered = BASE64.encode(&data);
+
+        let result = nip44_decrypt(&ck, &tampered);
+        assert!(result.is_err(), "tampered MAC must be rejected");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("MAC verification failed"),
+            "error should mention MAC failure, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn nip44_tampered_ciphertext_rejected() {
+        let sk_a = hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
+            .unwrap();
+        let sk_b_raw =
+            hex::decode("0000000000000000000000000000000000000000000000000000000000000002")
+                .unwrap();
+        let sk_b = SecretKey::from_slice(&sk_b_raw).unwrap();
+        let pub_b = secret_key_to_pubkey_hex(&sk_b);
+
+        let ck = get_conversation_key(&sk_a, &pub_b).unwrap();
+        let encrypted = nip44_encrypt(&ck, b"test payload").unwrap();
+
+        // Decode, tamper with ciphertext (not MAC), re-encode.
+        let mut data = BASE64.decode(&encrypted).unwrap();
+        // Flip a byte in the ciphertext region (after version + nonce, before MAC).
+        let ct_start = 1 + 32; // version(1) + nonce(32)
+        data[ct_start + 5] ^= 0xFF;
+        let tampered = BASE64.encode(&data);
+
+        let result = nip44_decrypt(&ck, &tampered);
+        assert!(
+            result.is_err(),
+            "tampered ciphertext must be rejected by MAC check"
+        );
+    }
+
+    #[test]
+    fn nip44_payload_too_short_rejected() {
+        let ck = [0u8; 32];
+        // Very short payload (below 132 chars minimum).
+        let result = nip44_decrypt(&ck, "AAAA");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn nip44_unsupported_version_rejected() {
+        let ck = [0u8; 32];
+        // Construct a payload with version byte = 3 (unsupported).
+        let mut data = vec![3u8]; // wrong version
+        data.extend_from_slice(&[0u8; 32]); // nonce
+        data.extend_from_slice(&[0u8; 64]); // fake ciphertext (enough to pass length check)
+        data.extend_from_slice(&[0u8; 32]); // fake mac
+        let payload = BASE64.encode(&data);
+
+        let result = nip44_decrypt(&ck, &payload);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("unsupported NIP-44 version"));
+    }
+
+    #[test]
+    fn nip44_padding_boundary_32_to_33() {
+        // Verify that messages at the 32→33 byte boundary are handled correctly.
+        let sk_a = hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
+            .unwrap();
+        let sk_b_raw =
+            hex::decode("0000000000000000000000000000000000000000000000000000000000000002")
+                .unwrap();
+        let sk_b = SecretKey::from_slice(&sk_b_raw).unwrap();
+        let pub_b = secret_key_to_pubkey_hex(&sk_b);
+
+        let ck = get_conversation_key(&sk_a, &pub_b).unwrap();
+
+        // Test exact boundary: 32 bytes and 33 bytes.
+        let msg_32 = vec![0x61u8; 32];
+        let msg_33 = vec![0x61u8; 33];
+
+        let enc_32 = nip44_encrypt(&ck, &msg_32).unwrap();
+        let enc_33 = nip44_encrypt(&ck, &msg_33).unwrap();
+
+        let dec_32 = nip44_decrypt(&ck, &enc_32).unwrap();
+        let dec_33 = nip44_decrypt(&ck, &enc_33).unwrap();
+
+        assert_eq!(dec_32, msg_32);
+        assert_eq!(dec_33, msg_33);
+
+        // 32-byte message pads to 32; 33-byte message pads to 64.
+        // This means the ciphertext lengths should differ.
+        let data_32 = BASE64.decode(&enc_32).unwrap();
+        let data_33 = BASE64.decode(&enc_33).unwrap();
+        assert!(
+            data_33.len() > data_32.len(),
+            "33-byte message should produce larger ciphertext than 32-byte"
+        );
     }
 }

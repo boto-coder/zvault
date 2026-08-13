@@ -185,7 +185,7 @@ pub fn apply_sync_message(
         )));
     }
 
-    // Validate sender is a live device.
+    // Validate sender is a live device and verify pubkey matches.
     let sender_entry = vault.devices.iter().find(|d| d.device_id == msg.sender);
     match sender_entry {
         None => {
@@ -200,7 +200,17 @@ pub fn apply_sync_message(
                 msg.sender
             )));
         }
-        _ => {}
+        Some(entry) => {
+            // Verify that the caller-provided sender_pubkey_hex matches the
+            // pubkey stored in the device entry. This prevents an attacker from
+            // spoofing a valid device_id with a different keypair.
+            if entry.nostr_pubkey != sender_pubkey_hex {
+                return Err(crate::Error::SyncError(format!(
+                    "sender pubkey mismatch: device {} has pubkey {}, but message claims {}",
+                    msg.sender, entry.nostr_pubkey, sender_pubkey_hex
+                )));
+            }
+        }
     }
 
     // For full sync: check version (stale guard).
@@ -211,10 +221,16 @@ pub fn apply_sync_message(
 
     // Decrypt payload.
     let conversation_key = nostr::get_conversation_key(recipient_secret_key, sender_pubkey_hex)?;
-    let plaintext = nostr::nip44_decrypt(&conversation_key, &msg.payload)?;
+    // Wrap decrypted plaintext in Zeroizing — it contains the full vault JSON
+    // with all credentials in cleartext.
+    let plaintext: Zeroizing<Vec<u8>> =
+        Zeroizing::new(nostr::nip44_decrypt(&conversation_key, &msg.payload)?);
 
     // Deserialise remote vault.
     let remote_vault = Vault::from_json(&plaintext)?;
+
+    // Extract devices before consuming items (items are moved in the loop below).
+    let remote_devices = remote_vault.devices.clone();
 
     // Merge items: last-write-wins at item granularity.
     // Remote items override local items if same ID exists.
@@ -233,10 +249,9 @@ pub fn apply_sync_message(
     }
 
     // Merge device list via OR-Set CRDT.
+    // Use the already-deserialized remote vault's devices (no double-deserialization).
     let mut local_dm = DeviceManager::from_vault(vault);
-    let remote_dm = DeviceManager::from_vault(&remote_vault_for_devices(&remote_vault_devices(
-        &plaintext,
-    )?));
+    let remote_dm = DeviceManager::from_vault(&remote_vault_for_devices(&remote_devices));
     local_dm.merge(&remote_dm);
     local_dm.flush(vault);
 
@@ -254,13 +269,6 @@ fn remote_vault_for_devices(devices: &[crate::vault::DeviceEntry]) -> Vault {
     let mut v = Vault::new();
     v.devices = devices.to_vec();
     v
-}
-
-/// Extract devices from raw JSON bytes (avoids double-deserialisation overhead
-/// but we already deserialised; this is a minimal helper).
-fn remote_vault_devices(plaintext: &[u8]) -> Result<Vec<crate::vault::DeviceEntry>> {
-    let v: Vault = Vault::from_json(plaintext)?;
-    Ok(v.devices)
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -484,5 +492,139 @@ mod tests {
         let result = apply_sync_message(&mut local_vault, &msg, &mut local_clock, &sk_b, &pub_a);
 
         assert!(result.is_err());
+    }
+
+    // ── Edge-case tests (security review) ─────────────────────────────────────
+
+    #[test]
+    fn apply_sync_message_rejects_pubkey_mismatch() {
+        // A valid device_id in the device list but the caller passes a different
+        // pubkey than what's stored — must be rejected.
+        let (sk_a, pub_a) = test_device();
+        let (sk_b, pub_b) = test_device();
+        let (_sk_c, pub_c) = test_device(); // different pubkey
+
+        let mut remote_vault = Vault::new();
+        remote_vault.version = 5;
+
+        let mut local_vault = Vault::new();
+        local_vault.id = remote_vault.id;
+        local_vault.version = 1;
+
+        let sender_id = Uuid::new_v4();
+        // Device entry stores pub_a as the legitimate pubkey.
+        local_vault.devices.push(crate::vault::DeviceEntry {
+            device_id: sender_id,
+            nostr_pubkey: pub_a.clone(),
+            label: "Legit Device".into(),
+            added_at: chrono::Utc::now(),
+            added_by: sender_id,
+            revoked: false,
+            revoked_at: None,
+            revoked_by: None,
+        });
+
+        let mut remote_clock = LamportClock::new();
+        let msg =
+            build_full_sync_message(&remote_vault, &mut remote_clock, sender_id, &sk_a, &pub_b)
+                .unwrap();
+
+        let mut local_clock = LamportClock::new();
+        // Pass pub_c instead of pub_a — must be rejected.
+        let result = apply_sync_message(&mut local_vault, &msg, &mut local_clock, &sk_b, &pub_c);
+
+        assert!(result.is_err(), "pubkey mismatch must be rejected");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("pubkey mismatch"),
+            "error should mention pubkey mismatch, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn apply_sync_message_replay_is_idempotent() {
+        // Applying the same message twice should not duplicate items.
+        let (sk_a, pub_a) = test_device();
+        let (sk_b, pub_b) = test_device();
+
+        let mut remote_vault = Vault::new();
+        let mut item = VaultItem::new(ItemKind::Login, "Replayed Item");
+        let item_id = item.id;
+        item.username = Some("replay_test".into());
+        remote_vault.add_item(item);
+        remote_vault.version = 5;
+
+        let mut local_vault = Vault::new();
+        local_vault.id = remote_vault.id;
+        local_vault.version = 1;
+
+        let sender_id = Uuid::new_v4();
+        local_vault.devices.push(crate::vault::DeviceEntry {
+            device_id: sender_id,
+            nostr_pubkey: pub_a.clone(),
+            label: "Remote".into(),
+            added_at: chrono::Utc::now(),
+            added_by: sender_id,
+            revoked: false,
+            revoked_at: None,
+            revoked_by: None,
+        });
+
+        let mut remote_clock = LamportClock::new();
+        let msg =
+            build_full_sync_message(&remote_vault, &mut remote_clock, sender_id, &sk_a, &pub_b)
+                .unwrap();
+
+        let mut local_clock = LamportClock::new();
+
+        // First application — should merge the item.
+        apply_sync_message(&mut local_vault, &msg, &mut local_clock, &sk_b, &pub_a).unwrap();
+        assert_eq!(local_vault.items.len(), 1);
+
+        // Second application — stale guard kicks in (version <= local now).
+        apply_sync_message(&mut local_vault, &msg, &mut local_clock, &sk_b, &pub_a).unwrap();
+        // Item count should NOT increase.
+        assert_eq!(
+            local_vault.items.len(),
+            1,
+            "replay must not duplicate items"
+        );
+        // The original item should still be there.
+        assert!(local_vault.get_item(item_id).is_some());
+    }
+
+    #[test]
+    fn apply_sync_message_vault_id_mismatch_rejected() {
+        let (sk_a, pub_a) = test_device();
+        let (sk_b, pub_b) = test_device();
+
+        let mut remote_vault = Vault::new();
+        remote_vault.version = 5;
+
+        let mut local_vault = Vault::new();
+        // Different vault ID — must be rejected.
+        local_vault.version = 1;
+
+        let sender_id = Uuid::new_v4();
+        local_vault.devices.push(crate::vault::DeviceEntry {
+            device_id: sender_id,
+            nostr_pubkey: pub_a.clone(),
+            label: "Remote".into(),
+            added_at: chrono::Utc::now(),
+            added_by: sender_id,
+            revoked: false,
+            revoked_at: None,
+            revoked_by: None,
+        });
+
+        let mut remote_clock = LamportClock::new();
+        let msg =
+            build_full_sync_message(&remote_vault, &mut remote_clock, sender_id, &sk_a, &pub_b)
+                .unwrap();
+
+        let mut local_clock = LamportClock::new();
+        let result = apply_sync_message(&mut local_vault, &msg, &mut local_clock, &sk_b, &pub_a);
+
+        assert!(result.is_err(), "vault ID mismatch must be rejected");
     }
 }
