@@ -105,6 +105,14 @@ pub const DEFAULT_P_COST: u32 = 4;
 /// Do not clone or copy this type; derive a new key instead.
 pub struct VaultKey(pub(crate) Zeroizing<[u8; 32]>);
 
+impl std::fmt::Debug for VaultKey {
+    /// Redacts the key bytes to prevent accidental exposure in logs or
+    /// panic messages.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VaultKey([REDACTED])")
+    }
+}
+
 impl VaultKey {
     /// Create a `VaultKey` from a [`Zeroizing`]-wrapped 32-byte array.
     ///

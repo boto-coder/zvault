@@ -13,7 +13,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 // ─── Item kind ───────────────────────────────────────────────────────────────
 
@@ -90,6 +90,18 @@ pub struct IdentityFields {
 /// Sensitive `String` fields (`password`, `totp_secret`, `note`,
 /// `card_number`, `cvv`) are zeroed on drop via the manual `Drop` impl.
 /// Non-zeroizable fields (`Uuid`, `DateTime<Utc>`) contain no secret material.
+///
+/// # ⚠ Clone warning
+///
+/// This type derives [`Clone`] because it is required for data-model
+/// usability (e.g. passing items across API boundaries).  Each clone is an
+/// independent allocation whose sensitive fields are zeroed independently
+/// by its own `Drop`.  However, clones must be dropped promptly — do not
+/// store clones in long-lived collections unless necessary.  Before M5
+/// (desktop UI), this accepted risk will be re-evaluated.
+///
+/// Do not pass a cloned `VaultItem` to code that may log or serialise it
+/// without encryption.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultItem {
     /// Stable item identifier.
@@ -319,6 +331,11 @@ impl Vault {
     ///
     /// Bumps [`Vault::version`] and updates [`Vault::updated_at`].
     ///
+    /// Uses [`Vec::remove`] (order-preserving, O(n)) rather than
+    /// `swap_remove` so that item order is stable across mutations.
+    /// Stable order matters for deterministic JSON serialisation and for
+    /// future CRDT merge logic in M4.
+    ///
     /// # Errors
     ///
     /// Returns [`crate::Error::ItemNotFound`] if no item with that ID exists.
@@ -328,7 +345,7 @@ impl Vault {
             .iter()
             .position(|i| i.id == id)
             .ok_or(crate::Error::ItemNotFound(id))?;
-        self.items.swap_remove(pos);
+        self.items.remove(pos);
         self.version += 1;
         self.updated_at = Utc::now();
         Ok(())
@@ -348,15 +365,18 @@ impl Vault {
 
     // ── M2 Serialisation ──────────────────────────────────────────────────
 
-    /// Serialise the vault to JSON bytes.
+    /// Serialise the vault to JSON bytes, wrapped in [`Zeroizing`] so the
+    /// plaintext buffer is overwritten on drop.
     ///
     /// The resulting bytes are passed to the crypto layer for encryption.
     ///
     /// # Errors
     ///
     /// Returns [`crate::Error::Serialisation`] if serialisation fails.
-    pub fn to_json(&self) -> crate::Result<Vec<u8>> {
-        serde_json::to_vec(self).map_err(|e| crate::Error::Serialisation(e.to_string()))
+    pub fn to_json(&self) -> crate::Result<Zeroizing<Vec<u8>>> {
+        serde_json::to_vec(self)
+            .map(Zeroizing::new)
+            .map_err(|e| crate::Error::Serialisation(e.to_string()))
     }
 
     /// Deserialise a vault from JSON bytes produced by [`Vault::to_json`].

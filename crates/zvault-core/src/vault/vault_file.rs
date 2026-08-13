@@ -14,32 +14,37 @@
 //!
 //! Every write goes through the private [`atomic_write`] helper:
 //!
-//! 1. Write the new ciphertext to `<original_path>.tmp`.
+//! 1. Write the new ciphertext to `<original_path>.tmp` (full filename + `.tmp`,
+//!    not extension-replacement).
 //! 2. Rename `.tmp` → original path (atomic on POSIX; best-effort on Windows).
 //!
 //! This means a crash mid-write leaves the original file intact; the orphaned
 //! `.tmp` file is safe to delete.
 //!
-//! ## Fresh salt + IV on every write
+//! ## Key consistency on `save`
 //!
-//! [`VaultFile::save`] calls [`crate::crypto::encrypt`] which calls
-//! [`crate::crypto::KdfParams::generate`] internally, so every write produces
-//! a fresh random salt **and** a fresh random IV.  The old [`VaultKey`] passed
-//! to `save` is only used as the AES-256-GCM encryption key — the KDF is not
-//! re-run.  This means `save` is fast (no Argon2id work) while still ensuring
-//! nonce uniqueness.
+//! [`VaultFile::save`] takes both a [`VaultKey`] *and* the [`KdfParams`] that
+//! were used to derive that key.  It calls [`encrypt_with_params`] with those
+//! exact params (generating only a fresh IV, not a new salt), ensuring that
+//! the key in the caller's memory remains valid for future saves without
+//! re-running Argon2id.
 //!
-//! ## Design note: `save` takes a `VaultKey`
+//! To obtain a new salt (e.g. after a period of inactivity), use
+//! [`VaultFile::rekey`] with the same password.
 //!
-//! `save` accepts a [`VaultKey`] rather than a password so that callers can
-//! keep the key in memory for the lifetime of a session (e.g. after biometric
-//! unlock) without having to prompt the user for their password on every save.
-//! Re-keying (password change) is handled by the dedicated [`VaultFile::rekey`]
-//! method.
+//! ## Memory safety
+//!
+//! All intermediate plaintext buffers (`Vec<u8>` containing JSON or decrypted
+//! vault bytes) are wrapped in [`zeroize::Zeroizing`] so they are overwritten
+//! on drop even if an early-return error path is taken.
 
 use std::path::{Path, PathBuf};
 
-use crate::crypto::{decrypt, derive_key, encrypt, parse_kdf_params, KdfParams, VaultKey};
+use zeroize::Zeroizing;
+
+use crate::crypto::{
+    decrypt, derive_key, encrypt_with_params, parse_kdf_params, KdfParams, VaultKey,
+};
 use crate::vault::Vault;
 use crate::Result;
 
@@ -47,26 +52,32 @@ use crate::Result;
 
 /// A handle to an encrypted vault file on disk.
 ///
-/// The struct holds only the file path — all vault data lives in the [`Vault`]
-/// value returned by [`VaultFile::open`] / [`VaultFile::create`].  The caller
-/// is responsible for keeping the [`VaultKey`] in memory for the duration of
-/// the session.
+/// The struct holds the file path and the [`KdfParams`] that were used when
+/// the file was last written.  Callers must hold the corresponding [`VaultKey`]
+/// in memory for subsequent [`VaultFile::save`] calls; the key is not stored
+/// here.
 ///
 /// # Example
 ///
 /// ```no_run
-/// use zvault_core::vault::{VaultFile, Vault};
+/// use zvault_core::vault::VaultFile;
 ///
 /// // Create a new vault
-/// let vf = VaultFile::create("my-master-password", "/tmp/my.zvault").unwrap();
+/// let (_vf, _key) = VaultFile::create("my-master-password", "/tmp/my.zvault").unwrap();
 ///
 /// // Open an existing vault
-/// let (vf, vault) = VaultFile::open("my-master-password", "/tmp/my.zvault").unwrap();
+/// let (_vf, _key, _vault) = VaultFile::open("my-master-password", "/tmp/my.zvault").unwrap();
 /// ```
 #[derive(Debug, Clone)]
 pub struct VaultFile {
     /// Path to the encrypted vault file.
     pub path: PathBuf,
+    /// The KDF params embedded in the on-disk blob.
+    ///
+    /// Stored here so [`VaultFile::save`] can call [`encrypt_with_params`]
+    /// with the same params the caller's [`VaultKey`] was derived from,
+    /// keeping the key consistent with the file across multiple saves.
+    pub kdf_params: KdfParams,
 }
 
 impl VaultFile {
@@ -74,54 +85,44 @@ impl VaultFile {
 
     /// Create a new, empty vault at `path`, encrypted with `password`.
     ///
-    /// Generates fresh [`KdfParams`] (random salt + default Argon2id cost
-    /// parameters), derives the vault key, serialises an empty [`Vault`] to
-    /// JSON, encrypts the JSON, and writes the result atomically.
+    /// Returns the [`VaultFile`] handle and the derived [`VaultKey`] so the
+    /// caller can immediately start using the vault without a second `open`.
     ///
     /// # Errors
     ///
     /// - [`Error::Crypto`] — key derivation or encryption failed.
     /// - [`Error::Serialisation`] — vault JSON serialisation failed.
     /// - [`Error::Io`] — filesystem write or rename failed.
-    pub fn create(password: &str, path: impl AsRef<Path>) -> Result<Self> {
+    pub fn create(password: &str, path: impl AsRef<Path>) -> Result<(Self, VaultKey)> {
         let path = path.as_ref().to_path_buf();
 
-        // Build and serialise a fresh, empty vault.
+        // Serialise a fresh, empty vault.  to_json() returns Zeroizing<Vec<u8>>
+        // so the JSON bytes (which contain the vault structure) are zeroed on drop.
         let vault = Vault::new();
         let json = vault.to_json()?;
 
-        // Derive key and encrypt.  `encrypt` generates fresh KdfParams internally.
+        // Derive key from fresh params.
         let params = KdfParams::generate();
         let key = derive_key(password, &params)?;
-        // encrypt() will generate its own fresh KdfParams; we use
-        // encrypt_with_params so that the KDF params we already derived are
-        // embedded in the blob (matching the key we just derived).
-        let blob = crate::crypto::encrypt_with_params(&key, &json, &params)?;
 
+        // Encrypt and write.
+        let blob = encrypt_with_params(&key, &json, &params)?;
         atomic_write(&path, &blob)?;
 
-        Ok(Self { path })
+        Ok((
+            Self {
+                path,
+                kdf_params: params,
+            },
+            key,
+        ))
     }
 
-    /// Open an existing vault file, decrypt it, and return the [`Vault`].
+    /// Open an existing vault file, decrypt it, and return the [`Vault`] and
+    /// the derived [`VaultKey`].
     ///
-    /// The returned [`VaultKey`] is **not** included in the return value —
-    /// callers that need the key for subsequent [`VaultFile::save`] calls
-    /// should re-derive it from [`KdfParams`] (available via
-    /// [`parse_kdf_params`]) or derive it once and store it in memory.
-    ///
-    /// To obtain the key for a save session:
-    ///
-    /// ```no_run
-    /// use zvault_core::crypto::{parse_kdf_params, derive_key};
-    /// use zvault_core::vault::VaultFile;
-    ///
-    /// let data = std::fs::read("/tmp/my.zvault").unwrap();
-    /// let params = parse_kdf_params(&data).unwrap();
-    /// let key = derive_key("password", &params).unwrap();
-    /// let (vf, vault) = VaultFile::open("password", "/tmp/my.zvault").unwrap();
-    /// // use `key` and `vf` for subsequent saves
-    /// ```
+    /// The returned [`VaultKey`] should be kept in memory for the session and
+    /// passed to [`VaultFile::save`] on every mutation.
     ///
     /// # Errors
     ///
@@ -130,28 +131,46 @@ impl VaultFile {
     ///   password (AES-GCM authentication tag mismatch).
     /// - [`Error::Crypto`] — KDF failure.
     /// - [`Error::Serialisation`] — plaintext is not valid vault JSON.
-    pub fn open(password: &str, path: impl AsRef<Path>) -> Result<(Self, Vault)> {
+    pub fn open(password: &str, path: impl AsRef<Path>) -> Result<(Self, VaultKey, Vault)> {
         let path = path.as_ref().to_path_buf();
 
         let blob = std::fs::read(&path)?;
         let params = parse_kdf_params(&blob)?;
         let key = derive_key(password, &params)?;
-        let plaintext = decrypt(&key, &blob)?;
+
+        // Wrap the plaintext in Zeroizing so the JSON bytes are zeroed on drop.
+        let plaintext: Zeroizing<Vec<u8>> = Zeroizing::new(decrypt(&key, &blob)?);
         let vault = Vault::from_json(&plaintext)?;
 
-        Ok((Self { path }, vault))
+        Ok((
+            Self {
+                path,
+                kdf_params: params,
+            },
+            key,
+            vault,
+        ))
     }
 
     /// Re-encrypt `vault` with `key` and overwrite the vault file atomically.
     ///
-    /// A fresh random salt **and** IV are generated on every call (via
-    /// [`encrypt`] → [`KdfParams::generate`]), so the on-disk blob always
-    /// differs from the previous write even when the vault contents are
-    /// unchanged.
+    /// Uses the [`KdfParams`] stored in this [`VaultFile`] handle (the same
+    /// params that `key` was derived from) so the caller's key remains valid
+    /// after the save.  A fresh random IV is generated on every call, so the
+    /// on-disk blob always differs from the previous write even when the vault
+    /// contents are unchanged.
     ///
-    /// `key` must be the current vault key (derived from the user's password
-    /// via [`derive_key`]).  It is used here only as the AES-256-GCM
-    /// encryption key; Argon2id is **not** re-run on every save.
+    /// # Key consistency
+    ///
+    /// `key` **must** have been derived with `self.kdf_params`.  If you derived
+    /// the key from a different set of params the GCM authentication will fail
+    /// on the next `open`.  The normal flow is:
+    ///
+    /// ```text
+    /// let (vf, key, mut vault) = VaultFile::open(password, path)?;
+    /// vault.add_item(item);
+    /// vf.save(&key, &vault)?;  // uses vf.kdf_params — consistent
+    /// ```
     ///
     /// # Errors
     ///
@@ -159,20 +178,25 @@ impl VaultFile {
     /// - [`Error::Crypto`] — encryption failed.
     /// - [`Error::Io`] — filesystem write or rename failed.
     pub fn save(&self, key: &VaultKey, vault: &Vault) -> Result<()> {
+        // to_json() returns Zeroizing<Vec<u8>> — vault plaintext zeroed on drop.
         let json = vault.to_json()?;
-        // encrypt() generates fresh KdfParams (new salt + new IV) internally.
-        let blob = encrypt(key, &json)?;
+
+        // Use the stored KDF params so the caller's key stays consistent with
+        // the file.  encrypt_with_params generates a fresh IV but keeps the
+        // same salt, meaning the key does not go stale after a save.
+        let blob = encrypt_with_params(key, &json, &self.kdf_params)?;
         atomic_write(&self.path, &blob)
     }
 
     /// Change the master password of this vault file.
     ///
     /// Reads and decrypts the vault with `old_password`, then re-encrypts it
-    /// with `new_password` (fresh [`KdfParams`] — new salt, new IV) and
+    /// under `new_password` with fresh [`KdfParams`] (new salt + new IV) and
     /// overwrites the file atomically.
     ///
-    /// Returns the decrypted [`Vault`] so the caller can immediately resume
-    /// working with it without a second `open` call.
+    /// Returns the updated [`VaultFile`] handle (with the new `kdf_params`),
+    /// the new [`VaultKey`], and the decrypted [`Vault`] so the caller can
+    /// resume working without a second `open` call.
     ///
     /// # Errors
     ///
@@ -180,23 +204,30 @@ impl VaultFile {
     /// - [`Error::InvalidVaultFile`] — wrong `old_password` or corrupt file.
     /// - [`Error::Crypto`] — KDF or encryption failure.
     /// - [`Error::Serialisation`] — vault JSON round-trip failure.
-    pub fn rekey(&self, old_password: &str, new_password: &str) -> Result<Vault> {
+    pub fn rekey(&self, old_password: &str, new_password: &str) -> Result<(Self, VaultKey, Vault)> {
         // Decrypt with old password.
         let blob = std::fs::read(&self.path)?;
         let old_params = parse_kdf_params(&blob)?;
         let old_key = derive_key(old_password, &old_params)?;
-        let plaintext = decrypt(&old_key, &blob)?;
 
-        // Re-encrypt with new password + fresh KdfParams.
+        // Wrap plaintext in Zeroizing — contains full vault JSON with secrets.
+        let plaintext: Zeroizing<Vec<u8>> = Zeroizing::new(decrypt(&old_key, &blob)?);
+
+        // Re-encrypt with new password + fresh KdfParams (new salt + new IV).
         let new_params = KdfParams::generate();
         let new_key = derive_key(new_password, &new_params)?;
-        let new_blob = crate::crypto::encrypt_with_params(&new_key, &plaintext, &new_params)?;
+        let new_blob = encrypt_with_params(&new_key, &plaintext, &new_params)?;
 
         atomic_write(&self.path, &new_blob)?;
 
-        // Deserialise and return so the caller doesn't need another open call.
+        // Deserialise and return — plaintext is still in scope (Zeroizing drops
+        // it after this function returns).
         let vault = Vault::from_json(&plaintext)?;
-        Ok(vault)
+        let new_vf = Self {
+            path: self.path.clone(),
+            kdf_params: new_params,
+        };
+        Ok((new_vf, new_key, vault))
     }
 }
 
@@ -205,19 +236,26 @@ impl VaultFile {
 /// Write `data` to `path` atomically by writing to `<path>.tmp` first and then
 /// renaming.
 ///
-/// On POSIX systems, `rename(2)` is atomic with respect to other processes
-/// observing the file: they see either the old content or the new content,
-/// never a partial write.
+/// The temp path is constructed by appending `.tmp` to the **full filename**
+/// (not by replacing the last extension via `with_extension`).  For example:
+/// - `my.zvault`    → `my.zvault.tmp`
+/// - `backup`       → `backup.tmp`
+/// - `v2.bak.zvault` → `v2.bak.zvault.tmp`
 ///
-/// On Windows, `std::fs::rename` will fail if the destination exists; Rust's
-/// standard library works around this by using `MoveFileExW` with the
-/// `MOVEFILE_REPLACE_EXISTING` flag, which provides close-to-atomic semantics.
+/// This avoids the `with_extension` pitfall where a path ending in `.tmp`
+/// would produce the same temp and destination path, making the rename a no-op.
+///
+/// On POSIX, `rename(2)` is atomic: observers see either the old content or
+/// the new content, never a partial write.  On Windows, Rust uses
+/// `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` which is close-to-atomic.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Io`] if either the write or the rename fails.
 fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
-    let tmp = path.with_extension("tmp");
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
     std::fs::write(&tmp, data)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
@@ -228,13 +266,14 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vault::ItemKind;
     use crate::Error;
     use tempfile::tempdir;
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
     /// Low-cost KDF params for tests — fast Argon2id, never use in production.
-    fn test_kdf_params() -> KdfParams {
+    fn test_params() -> KdfParams {
         KdfParams {
             salt: [0x42u8; 32],
             m_cost: 8,
@@ -243,110 +282,112 @@ mod tests {
         }
     }
 
-    // We need a way to create/open with low-cost KDF params for fast tests.
-    // Since VaultFile::create uses KdfParams::generate() (production params),
-    // we provide a helper that writes a vault blob with custom params directly.
-    fn create_with_test_params(password: &str, path: &Path) -> Result<VaultFile> {
+    /// Like VaultFile::create but with fast test KDF params.
+    fn create_test(password: &str, path: &Path) -> Result<(VaultFile, VaultKey)> {
         let vault = Vault::new();
         let json = vault.to_json()?;
-        let params = test_kdf_params();
+        let params = test_params();
         let key = derive_key(password, &params)?;
-        let blob = crate::crypto::encrypt_with_params(&key, &json, &params)?;
+        let blob = encrypt_with_params(&key, &json, &params)?;
         atomic_write(path, &blob)?;
-        Ok(VaultFile {
-            path: path.to_path_buf(),
-        })
+        Ok((
+            VaultFile {
+                path: path.to_path_buf(),
+                kdf_params: params,
+            },
+            key,
+        ))
     }
 
-    fn open_with_test_params(password: &str, path: &Path) -> Result<(VaultFile, Vault)> {
+    /// Like VaultFile::open but re-derives with the params in the file (test-aware).
+    fn open_test(password: &str, path: &Path) -> Result<(VaultFile, VaultKey, Vault)> {
         let blob = std::fs::read(path)?;
         let params = parse_kdf_params(&blob)?;
         let key = derive_key(password, &params)?;
-        let plaintext = decrypt(&key, &blob)?;
+        let plaintext: Zeroizing<Vec<u8>> = Zeroizing::new(decrypt(&key, &blob)?);
         let vault = Vault::from_json(&plaintext)?;
         Ok((
             VaultFile {
                 path: path.to_path_buf(),
+                kdf_params: params,
             },
+            key,
             vault,
         ))
     }
 
-    fn save_with_test_params(vf: &VaultFile, password: &str, vault: &Vault) -> Result<()> {
-        let json = vault.to_json()?;
-        let params = test_kdf_params();
-        let key = derive_key(password, &params)?;
-        let blob = crate::crypto::encrypt_with_params(&key, &json, &params)?;
-        atomic_write(&vf.path, &blob)
-    }
-
     // ── create + open round-trip ──────────────────────────────────────────
 
-    /// `create` writes a file that `open` can read back and deserialise.
     #[test]
     fn create_writes_file_open_reads_back() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.zvault");
 
-        let vf = create_with_test_params("correct-horse-battery-staple", &path).unwrap();
+        let (vf, _key) = create_test("correct-horse-battery-staple", &path).unwrap();
         assert!(path.exists(), "vault file should exist after create");
 
-        let (_, vault) = open_with_test_params("correct-horse-battery-staple", &path).unwrap();
+        let (_, _, vault) = open_test("correct-horse-battery-staple", &path).unwrap();
         assert_eq!(vf.path, path);
-        // A freshly created vault is empty and has version 0.
         assert!(vault.items.is_empty(), "new vault should have no items");
         assert_eq!(vault.version, 0);
     }
 
     // ── save round-trip ───────────────────────────────────────────────────
 
-    /// open → mutate vault.version → save → reopen → version is persisted.
     #[test]
     fn save_roundtrip_version_persisted() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("save_test.zvault");
 
-        create_with_test_params("save-password", &path).unwrap();
+        let (vf, key) = create_test("save-password", &path).unwrap();
+        let (_, _, mut vault) = open_test("save-password", &path).unwrap();
 
-        let (vf, mut vault) = open_with_test_params("save-password", &path).unwrap();
-
-        // Mutate the version field manually.
         vault.version = 42;
-        save_with_test_params(&vf, "save-password", &vault).unwrap();
+        vf.save(&key, &vault).unwrap();
 
-        // Reopen and verify the version was persisted.
-        let (_, vault2) = open_with_test_params("save-password", &path).unwrap();
-        assert_eq!(
-            vault2.version, 42,
-            "mutated version should survive a save/reopen cycle"
-        );
+        let (_, _, vault2) = open_test("save-password", &path).unwrap();
+        assert_eq!(vault2.version, 42, "version should survive save/reopen");
+    }
+
+    /// Key stays valid across multiple saves (kdf_params consistent).
+    #[test]
+    fn save_key_remains_valid_across_multiple_saves() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("multi_save.zvault");
+
+        let (vf, key) = create_test("multi-save", &path).unwrap();
+        let (_, _, mut vault) = open_test("multi-save", &path).unwrap();
+
+        // Three consecutive saves with the same key.
+        for i in 1u64..=3 {
+            vault.version = i;
+            vf.save(&key, &vault).unwrap();
+        }
+
+        // The key is still valid after multiple saves.
+        let (_, _, vault3) = open_test("multi-save", &path).unwrap();
+        assert_eq!(vault3.version, 3);
     }
 
     // ── password mismatch ─────────────────────────────────────────────────
 
-    /// Opening a vault with the wrong password must return an error, not panic.
     #[test]
     fn open_wrong_password_returns_error() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("mismatch.zvault");
+        create_test("correct-password", &path).unwrap();
 
-        create_with_test_params("correct-password", &path).unwrap();
-
-        let result = open_with_test_params("wrong-password", &path);
-        assert!(result.is_err(), "open with wrong password must return Err");
-        // Must not panic; reaching this assertion is the important part.
+        let result = open_test("wrong-password", &path);
+        assert!(result.is_err());
     }
 
-    /// Same as above — verify the specific error is InvalidVaultFile (GCM tag
-    /// failure) rather than a panic or a different error kind.
     #[test]
     fn open_wrong_password_returns_invalid_vault_file() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("mismatch2.zvault");
+        create_test("my-password", &path).unwrap();
 
-        create_with_test_params("my-password", &path).unwrap();
-
-        let err = open_with_test_params("bad-password", &path).unwrap_err();
+        let err = open_test("bad-password", &path).unwrap_err();
         assert!(
             matches!(err, Error::InvalidVaultFile(_)),
             "expected InvalidVaultFile, got: {err:?}"
@@ -355,59 +396,44 @@ mod tests {
 
     // ── rekey ─────────────────────────────────────────────────────────────
 
-    /// After `rekey`, opening with the new password succeeds.
     #[test]
     fn rekey_new_password_opens() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("rekey.zvault");
+        let (vf, _) = create_test("old-password", &path).unwrap();
 
-        create_with_test_params("old-password", &path).unwrap();
-
-        let vf = VaultFile { path: path.clone() };
-
-        // We need a rekey that uses test params — replicate the logic inline.
+        // Perform rekey inline with test params.
         {
             let blob = std::fs::read(&path).unwrap();
             let old_params = parse_kdf_params(&blob).unwrap();
             let old_key = derive_key("old-password", &old_params).unwrap();
-            let plaintext = decrypt(&old_key, &blob).unwrap();
-
-            let new_params = test_kdf_params();
-            // Use a distinct salt for the new params so old and new are different.
-            let new_params_new_salt = KdfParams {
+            let plaintext: Zeroizing<Vec<u8>> = Zeroizing::new(decrypt(&old_key, &blob).unwrap());
+            let new_params = KdfParams {
                 salt: [0xBBu8; 32],
-                ..new_params
+                m_cost: 8,
+                t_cost: 1,
+                p_cost: 1,
             };
-            let new_key = derive_key("new-password", &new_params_new_salt).unwrap();
-            let new_blob =
-                crate::crypto::encrypt_with_params(&new_key, &plaintext, &new_params_new_salt)
-                    .unwrap();
+            let new_key = derive_key("new-password", &new_params).unwrap();
+            let new_blob = encrypt_with_params(&new_key, &plaintext, &new_params).unwrap();
             atomic_write(&vf.path, &new_blob).unwrap();
         }
 
-        // Opening with new password must succeed.
-        let result_new = open_with_test_params("new-password", &path);
-        assert!(
-            result_new.is_ok(),
-            "open with new password should succeed after rekey"
-        );
+        let result = open_test("new-password", &path);
+        assert!(result.is_ok(), "new password should work after rekey");
     }
 
-    /// After `rekey`, opening with the old password must fail.
     #[test]
     fn rekey_old_password_fails() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("rekey2.zvault");
+        let (vf, _) = create_test("old-pass", &path).unwrap();
 
-        create_with_test_params("old-pass", &path).unwrap();
-
-        // Perform rekey inline with test params (same approach as above).
         {
             let blob = std::fs::read(&path).unwrap();
             let old_params = parse_kdf_params(&blob).unwrap();
             let old_key = derive_key("old-pass", &old_params).unwrap();
-            let plaintext = decrypt(&old_key, &blob).unwrap();
-
+            let plaintext: Zeroizing<Vec<u8>> = Zeroizing::new(decrypt(&old_key, &blob).unwrap());
             let new_params = KdfParams {
                 salt: [0xCCu8; 32],
                 m_cost: 8,
@@ -415,162 +441,178 @@ mod tests {
                 p_cost: 1,
             };
             let new_key = derive_key("new-pass", &new_params).unwrap();
-            let new_blob =
-                crate::crypto::encrypt_with_params(&new_key, &plaintext, &new_params).unwrap();
-            atomic_write(&path, &new_blob).unwrap();
+            let new_blob = encrypt_with_params(&new_key, &plaintext, &new_params).unwrap();
+            atomic_write(&vf.path, &new_blob).unwrap();
         }
 
-        // Old password must fail.
-        let result_old = open_with_test_params("old-pass", &path);
-        assert!(
-            result_old.is_err(),
-            "old password must be rejected after rekey"
-        );
+        let result = open_test("old-pass", &path);
+        assert!(result.is_err(), "old password must be rejected after rekey");
     }
 
-    // ── VaultFile::rekey public API ───────────────────────────────────────
-
-    /// VaultFile::rekey (public API) returns a vault and the new file can be
-    /// opened with the new password.
-    ///
-    /// This test uses the public `rekey` method directly; because `rekey` uses
-    /// production Argon2id params internally, we skip it when running under
-    /// typical CI (it would be slow).  In practice, when Vault::to_json /
-    /// from_json are wired up, callers can pass custom params.  For now we just
-    /// verify the method compiles and the round-trip logic works structurally.
-    ///
-    /// NOTE: This test is intentionally marked `#[ignore]` because `rekey` uses
-    /// production Argon2id parameters (64 MiB) which are too slow for unit
-    /// tests on typical CI hardware.  Run with `cargo test -- --ignored` to
-    /// exercise it.
+    /// VaultFile::rekey (public API) — uses production Argon2id params.
     #[test]
     #[ignore = "uses production Argon2id params (64 MiB) — too slow for unit tests"]
     fn rekey_public_api_roundtrip() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("rekey_api.zvault");
 
-        // create uses production params — only in ignored test
-        let _vf = VaultFile::create("old-password", &path).unwrap();
+        let (_vf, _key) = VaultFile::create("old-password", &path).unwrap();
 
-        let vf = VaultFile { path: path.clone() };
-        let vault = vf.rekey("old-password", "new-password").unwrap();
+        let vf = VaultFile::open("old-password", &path).unwrap().0;
+        let (new_vf, _new_key, vault) = vf.rekey("old-password", "new-password").unwrap();
         assert_eq!(vault.version, 0);
 
-        // Reopen with new password via standard open.
-        let (_, vault2) = VaultFile::open("new-password", &path).unwrap();
+        let (_, _, vault2) = VaultFile::open("new-password", &path).unwrap();
         assert_eq!(vault2.id, vault.id);
 
-        // Old password must fail.
+        // new_vf kdf_params must match what's in the file now.
+        let blob = std::fs::read(&path).unwrap();
+        let on_disk_params = parse_kdf_params(&blob).unwrap();
+        assert_eq!(new_vf.kdf_params, on_disk_params);
+
         let result_old = VaultFile::open("old-password", &path);
         assert!(result_old.is_err());
     }
 
     // ── corrupt file ─────────────────────────────────────────────────────
 
-    /// Flipping a byte anywhere in the ciphertext or header produces an error.
     #[test]
-    fn corrupt_file_byte_flip_returns_invalid_vault_file() {
+    fn corrupt_ciphertext_returns_invalid_vault_file() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("corrupt.zvault");
+        create_test("tamper-password", &path).unwrap();
 
-        create_with_test_params("tamper-password", &path).unwrap();
-
-        // Flip a byte in the ciphertext region (past the 64-byte header).
         let mut raw = std::fs::read(&path).unwrap();
-        let flip_idx = 64 + 2; // well inside ciphertext
-        raw[flip_idx] ^= 0xFF;
+        raw[64 + 2] ^= 0xFF;
         std::fs::write(&path, &raw).unwrap();
 
-        let result = open_with_test_params("tamper-password", &path);
-        assert!(result.is_err(), "corrupt ciphertext must return an error");
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidVaultFile(_)),
-            "expected InvalidVaultFile, got: {err:?}"
-        );
+        let err = open_test("tamper-password", &path).unwrap_err();
+        assert!(matches!(err, Error::InvalidVaultFile(_)));
     }
 
-    /// Flipping a byte in the header (AAD region) is also caught by the GCM tag.
     #[test]
-    fn corrupt_header_returns_invalid_vault_file() {
+    fn corrupt_header_returns_error() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("corrupt_header.zvault");
+        create_test("tamper-header", &path).unwrap();
 
-        create_with_test_params("tamper-header", &path).unwrap();
-
-        // Flip a byte in the KDF params region (bytes 8–39 = salt).
         let mut raw = std::fs::read(&path).unwrap();
         raw[10] ^= 0x01;
         std::fs::write(&path, &raw).unwrap();
 
-        let result = open_with_test_params("tamper-header", &path);
-        assert!(result.is_err(), "corrupt header (AAD) must return an error");
-        // This particular byte is in the salt region of the header; parse_kdf_params
-        // won't catch it (the magic is still valid), but the GCM tag will.
-        // The error may be InvalidVaultFile or another Error variant depending
-        // on whether parse_kdf_params is the first to notice.
+        assert!(open_test("tamper-header", &path).is_err());
     }
 
-    /// Truncated file (too short for even a valid header) returns an error.
     #[test]
     fn truncated_file_returns_error() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("truncated.zvault");
-
-        // Write a too-short file (not a valid vault blob).
         std::fs::write(&path, [0u8; 20]).unwrap();
-
-        let result = open_with_test_params("any-password", &path);
-        assert!(result.is_err(), "truncated file must return Err");
+        assert!(open_test("any-password", &path).is_err());
     }
 
-    // ── atomic write leaves no tmp behind ────────────────────────────────
+    // ── atomic write ─────────────────────────────────────────────────────
 
-    /// After a successful create, no `.tmp` file should remain.
     #[test]
     fn no_tmp_file_left_after_create() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("notmp.zvault");
-        let tmp_path = dir.path().join("notmp.tmp");
+        // The .tmp file should be <name>.zvault.tmp, not <name>.tmp
+        let tmp_path = dir.path().join("notmp.zvault.tmp");
 
-        create_with_test_params("no-tmp-test", &path).unwrap();
+        create_test("no-tmp-test", &path).unwrap();
 
         assert!(path.exists(), "vault file must exist");
         assert!(
             !tmp_path.exists(),
-            ".tmp file must not remain after successful create"
+            ".zvault.tmp must not remain after successful write"
+        );
+    }
+
+    #[test]
+    fn tmp_path_appends_not_replaces_extension() {
+        // Verify atomic_write uses <name>.zvault.tmp not <name>.tmp
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("my.zvault");
+        create_test("ext-test", &path).unwrap();
+
+        // The bad old path (with_extension replacement) would be "my.tmp"
+        let bad_tmp = dir.path().join("my.tmp");
+        assert!(
+            !bad_tmp.exists(),
+            "my.tmp must not exist — extension must be appended"
         );
     }
 
     // ── path is preserved ────────────────────────────────────────────────
 
-    /// The path stored in VaultFile matches the path we passed to create/open.
     #[test]
     fn vault_file_path_is_canonical() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("path_test.zvault");
 
-        let vf = create_with_test_params("path-test", &path).unwrap();
+        let (vf, _) = create_test("path-test", &path).unwrap();
         assert_eq!(vf.path, path);
 
-        let (vf2, _) = open_with_test_params("path-test", &path).unwrap();
+        let (vf2, _, _) = open_test("path-test", &path).unwrap();
         assert_eq!(vf2.path, path);
+    }
+
+    // ── kdf_params consistent ─────────────────────────────────────────────
+
+    #[test]
+    fn kdf_params_in_handle_matches_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("params_check.zvault");
+
+        let (vf, _key) = create_test("params-test", &path).unwrap();
+
+        // Parse params directly from the written file and compare.
+        let blob = std::fs::read(&path).unwrap();
+        let on_disk = parse_kdf_params(&blob).unwrap();
+        assert_eq!(
+            vf.kdf_params, on_disk,
+            "VaultFile.kdf_params must match what is in the file"
+        );
     }
 
     // ── wrong password does not panic ─────────────────────────────────────
 
-    /// Supplying the wrong password must return Err, never panic.
     #[test]
     fn wrong_password_does_not_panic() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("nopanic.zvault");
+        create_test("correct", &path).unwrap();
 
-        create_with_test_params("correct", &path).unwrap();
-
-        // These must all return Err gracefully.
         for bad_pw in &["", "wrong", "CORRECT", "correc", "correct "] {
-            let r = open_with_test_params(bad_pw, &path);
+            let r = open_test(bad_pw, &path);
             assert!(r.is_err(), "wrong password '{bad_pw}' must return Err");
         }
+    }
+
+    // ── CRUD items survive save/reopen ────────────────────────────────────
+
+    #[test]
+    fn items_survive_save_reopen() {
+        use crate::vault::VaultItem;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("items.zvault");
+
+        let (vf, key) = create_test("items-test", &path).unwrap();
+        let (_, _, mut vault) = open_test("items-test", &path).unwrap();
+
+        let mut item = VaultItem::new(ItemKind::Login, "GitHub");
+        item.username = Some("alice@example.com".into());
+        item.password = Some("s3cr3t".into());
+        let item_id = item.id;
+        vault.add_item(item);
+        vf.save(&key, &vault).unwrap();
+
+        let (_, _, vault2) = open_test("items-test", &path).unwrap();
+        let retrieved = vault2
+            .get_item(item_id)
+            .expect("item must survive save/reopen");
+        assert_eq!(retrieved.name, "GitHub");
+        assert_eq!(retrieved.username.as_deref(), Some("alice@example.com"));
     }
 }

@@ -147,3 +147,109 @@ behaviour (e.g. comparison-time equality) in future without changing callers.
 
 The type intentionally does not implement `Clone` or `Copy` to prevent
 accidental duplication of key material.
+
+---
+
+## M2 Design Decisions & Gotchas
+
+### VaultFile stores KdfParams — why
+
+`VaultFile` holds `kdf_params: KdfParams` (parsed from the file at open/create
+time) in addition to `path`.  This is essential for `save` correctness:
+
+- `save` calls `encrypt_with_params(key, json, &self.kdf_params)` — same salt,
+  fresh IV.  The in-memory `VaultKey` stays valid across multiple saves because
+  the salt (and therefore the key derivation) does not change.
+- If `save` called `encrypt()` instead, a new random salt would be written to
+  the file on every save.  The next `open` would derive a different key from
+  the new salt, causing a GCM authentication failure even with the correct
+  password — the file would appear corrupt.
+
+**Rule:** every `VaultFile` write that does not change the password must use
+`encrypt_with_params` with the stored `kdf_params`.  Only `rekey` (which takes
+both old and new passwords) is allowed to generate new `KdfParams`.
+
+### Session key pattern
+
+The canonical session flow is:
+
+```
+open(password, path) → (VaultFile, VaultKey, Vault)
+    ↓ user works with vault
+save(&vf, &key, &vault)   // may be called many times; key stays valid
+    ↓ user wants to lock
+drop(key)                  // Zeroizing<[u8; 32]> zeroed on drop
+```
+
+For biometric unlock (M6), the `VaultKey` is wrapped in the OS enclave key and
+stored in secure storage.  On biometric unlock, the OS decrypts the wrapped key
+and the session resumes from the `save` step without re-running Argon2id.
+
+### Zeroizing plaintext buffers
+
+All intermediate plaintext `Vec<u8>` buffers (JSON output of `to_json`,
+decrypted blob from `decrypt`) must be wrapped in `Zeroizing<Vec<u8>>`.
+
+`Vault::to_json()` returns `Zeroizing<Vec<u8>>` (not a bare `Vec<u8>`) so
+callers cannot forget to wrap it.  The `decrypt()` return value is a bare
+`Vec<u8>`; callers in `vault_file.rs` are responsible for immediately wrapping
+it: `let plaintext: Zeroizing<Vec<u8>> = Zeroizing::new(decrypt(...)?);`
+
+### Why delete_item uses Vec::remove not swap_remove
+
+`swap_remove` is O(1) but non-order-preserving: it replaces the deleted item
+with the last item in the Vec.  This causes two problems:
+
+1. **Non-deterministic serialisation:** the same logical vault state produces
+   different JSON depending on deletion history, making it harder to detect
+   genuine conflicts in M4 sync.
+2. **CRDT merge complexity:** if two devices independently delete different
+   items, their item lists will have diverged ordering, complicating merge.
+
+`Vec::remove` is O(n) but order-preserving.  For typical vault sizes (< 1000
+items) this is negligible.
+
+### atomic_write — append .tmp, do not replace extension
+
+`Path::with_extension("tmp")` replaces the last extension:
+`my.zvault` → `my.tmp`.  This is wrong for two reasons:
+
+- It destroys the `.zvault` extension from the temp filename, making it
+  ambiguous if the process crashes and a `.tmp` file is found.
+- If the path has no extension, or already ends in `.tmp`, the temp file and
+  the destination path could collide.
+
+The correct approach appends `.tmp` to the full filename:
+`my.zvault` → `my.zvault.tmp`.  Implementation:
+
+```rust
+let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+tmp_name.push(".tmp");
+let tmp = path.with_file_name(tmp_name);
+```
+
+### Timestamp vs version counter for conflict detection
+
+`Vault` serialises `created_at` / `updated_at` as RFC3339 strings.  These
+timestamps **must not** be used for conflict detection in M4 — wall clocks
+differ across devices and sub-second precision varies.
+
+The `version` field (a `u64` counter incremented on every mutation) is the
+authoritative conflict signal.  M4 sync must use `version` for CRDT merge
+decisions.  Timestamps are metadata for display only.
+
+### VaultItem::Clone — accepted risk
+
+`VaultItem` derives `Clone` because it is necessary for API usability.  Each
+clone is a separate heap allocation; its sensitive fields (`password`,
+`totp_secret`, etc.) are zeroed independently by its own `Drop` impl.
+
+**Risk:** a clone that outlives its intended scope holds live credential
+material in memory longer than necessary.
+
+**Mitigation:** doc comment on `VaultItem` warns callers; `Drop` impl zeroes
+all sensitive fields on release.
+
+**Re-evaluate:** M5 (desktop UI) — before any UI layer clones items into
+observable state (e.g. form fields), consider switching sensitive fields to
+`Zeroizing<String>` or a custom `SecretString` type.

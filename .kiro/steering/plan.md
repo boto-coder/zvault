@@ -2,7 +2,7 @@
 
 ## Current status
 
-M0 and M1 complete. Starting M2.
+M0, M1, and M2 complete. Starting M3.
 
 ## Milestone overview
 
@@ -10,7 +10,7 @@ M0 and M1 complete. Starting M2.
 |---|---|---|
 | M0 | Foundation — repo, CI, workspace scaffold | ✅ Done |
 | M1 | Core crypto — Argon2id KDF, AES-256-GCM | ✅ Done |
-| M2 | Vault data model — CRUD, serialisation, on-disk format | 🔲 Not started |
+| M2 | Vault data model — CRUD, serialisation, on-disk format | ✅ Done |
 | M3 | Device lifecycle — keypair, admit/revoke, CRDT | 🔲 Not started |
 | M4 | Nostr sync — NIP-44/59, relay pub/sub, conflict resolution | 🔲 Not started |
 | M5 | Desktop app shell — Tauri, React UI, vault CRUD | 🔲 Not started |
@@ -48,22 +48,20 @@ M0 and M1 complete. Starting M2.
 - Vertical slices: each phase ships a working end-to-end slice
 - Security review at each milestone before proceeding
 
-## Current milestone: M2
+## Current milestone: M3
 
-### M2 scope
-- `Vault` CRUD: `add_item`, `update_item`, `delete_item`, `get_item`, `list_items`
-- Vault serialisation: JSON (serde) + on-disk encryption via M1 crypto
-- `VaultFile` struct: combines `Vault` model + header (magic, KDF params, encrypted payload)
-- `VaultFile::create(password, path)` and `VaultFile::open(password, path)` high-level API
-- `VaultFile::rekey(old_password, new_password)` — re-encrypt with fresh salt
-- Round-trip tests: create → write to tempfile → read back → verify items
-- Password mismatch test; corrupt-file test
+### M3 scope
+- Device keypair generation (secp256k1 via `k256`)
+- `DeviceManager`: add/admit/revoke devices, persist to vault
+- OR-Set CRDT for device list (add-wins semantics)
+- Device identity: Nostr pubkey + label + admit/revoke timestamps
+- Integration tests: admit device, revoke device, CRDT merge
 
-### M2 next actions
-1. Implement CRUD methods on `Vault` (currently stubbed in `vault/mod.rs`)
-2. Implement `vault_file.rs` with the on-disk read/write API (uses `crate::crypto`)
-3. Write integration tests in `crates/zvault-core/tests/`
-4. Update DESIGN.md §16 if any design decisions are made
+### M3 next actions
+1. Implement device keypair generation in `device/mod.rs`
+2. Implement admit/revoke logic with OR-Set CRDT
+3. Wire device list into `Vault` serialisation
+4. Write integration tests
 
 ## Completed milestones
 
@@ -90,3 +88,25 @@ On-disk format (64-byte header):
 magic(8) | salt(32) | m_cost_le(4) | t_cost_le(4) | p_cost_le(4) | iv(12) | ct | tag(16)
 ```
 The full header (magic + KDF params + IV) is included in AES-GCM AAD, so any tampering with the header is detected during authentication.
+
+### M2 — Vault Data Model (complete, commit b054e7e + security fixes)
+Delivered:
+- `Vault` CRUD: `add_item`, `update_item`, `delete_item` (order-preserving `Vec::remove`), `get_item`, `list_items`
+- `Vault::to_json() -> Result<Zeroizing<Vec<u8>>>` and `from_json` — plaintext zeroed on drop
+- `Error::ItemNotFound(Uuid)` variant — clean separation from `InvalidVaultFile`
+- `VaultFile` struct holding `path` + `kdf_params` (essential for `save` correctness)
+- `VaultFile::create(password, path) -> (VaultFile, VaultKey)` — fresh KdfParams, atomic write
+- `VaultFile::open(password, path) -> (VaultFile, VaultKey, Vault)` — two-step parse→derive→decrypt
+- `VaultFile::save(&key, &vault)` — uses stored `kdf_params` so in-memory key stays valid
+- `VaultFile::rekey(old_pw, new_pw) -> (VaultFile, VaultKey, Vault)` — fresh KdfParams, atomic write
+- `atomic_write`: appends `.tmp` to full filename (not extension replacement)
+- All intermediate plaintext buffers wrapped in `Zeroizing<Vec<u8>>`
+- 13 CRUD unit tests + 15 VaultFile integration tests (tempfile)
+
+Security review findings addressed:
+- MEDIUM: `save` used `encrypt()` generating new KDF params — fixed to `encrypt_with_params` with stored params
+- MEDIUM: plaintext JSON buffers not zeroed — `to_json` now returns `Zeroizing<Vec<u8>>`; `decrypt` output wrapped at call sites
+- MEDIUM: `delete_item` used `swap_remove` — fixed to `Vec::remove` (order-preserving)
+- LOW: `atomic_write` used `with_extension("tmp")` — fixed to append `.tmp` to full filename
+- LOW: `VaultItem::Clone` copies sensitive fields — accepted risk; doc warning added; re-evaluate at M5
+- INFO: Timestamp vs version counter — documented in tech.md; M4 must use `version` for conflict detection
