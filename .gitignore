@@ -9,6 +9,12 @@ dist/
 .env
 .env.local
 *.local
+.output/
+.wxt/
+
+# ── WASM build output ────────────────────────────────────────────────────────
+crates/zvault-wasm/pkg/
+apps/extension/public/wasm/
 
 # ── Android ──────────────────────────────────────────────────────────────────
 *.apk

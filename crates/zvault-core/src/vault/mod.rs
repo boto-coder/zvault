@@ -397,7 +397,9 @@ impl Default for Vault {
 
 // ─── Submodules ──────────────────────────────────────────────────────────────
 
+#[cfg(feature = "native")]
 pub mod vault_file;
+#[cfg(feature = "native")]
 pub use vault_file::VaultFile;
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
