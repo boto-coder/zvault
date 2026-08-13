@@ -101,13 +101,13 @@ zvault/
 
 See [DESIGN.md](./DESIGN.md) for the full threat model, cryptographic design, and security checklist.
 
-**To report a vulnerability:** email security@zvault.app — do **not** open a public issue.
+**To report a vulnerability:** open a [GitHub Security Advisory](https://github.com/boto-coder/zvault/security/advisories/new) — do **not** open a public issue.
 
 ---
 
 ## Development Status
 
-Currently in **M0 — Foundation**. Core library milestones (M1–M4) are next. See [DESIGN.md §16](./DESIGN.md) for the full milestone plan.
+**M0 — Foundation** is complete. Currently working on **M1 — Core Crypto** (Argon2id KDF, AES-256-GCM). See [DESIGN.md §16](./DESIGN.md) for the full milestone plan.
 
 ---
 
