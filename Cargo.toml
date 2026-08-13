@@ -4,6 +4,7 @@ members = [
     "crates/zvault-core",
     "crates/zvault-cli",
     "crates/zvault-wasm",
+    "bindings/uniffi",
 ]
 
 [workspace.package]
