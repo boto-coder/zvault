@@ -56,6 +56,10 @@ struct BitwardenItem {
 }
 
 /// Login sub-object in a Bitwarden export.
+///
+/// Sensitive fields (`password`, `totp`) are extracted via `Option::take()`
+/// during import, moving ownership to `VaultItem` (which zeroes on drop).
+/// Any residual values left after extraction are zeroed via the manual `Drop`.
 #[derive(Debug, Deserialize)]
 struct BitwardenLogin {
     username: Option<String>,
@@ -75,6 +79,9 @@ struct BitwardenUri {
 }
 
 /// Card sub-object in a Bitwarden export.
+///
+/// Sensitive fields (`number`, `code`) are extracted via `Option::take()`
+/// during import, moving ownership to `VaultItem` (which zeroes on drop).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BitwardenCard {
@@ -146,12 +153,11 @@ pub fn import_bitwarden_json(data: &[u8]) -> Result<Vec<VaultItem>> {
         // Populate type-specific fields.
         match bw_item.item_type {
             1 => {
-                if let Some(login) = bw_item.login {
-                    item.username = login.username;
-                    item.password = login.password;
-                    item.totp_secret = login.totp;
-                    item.uris = login
-                        .uris
+                if let Some(mut login) = bw_item.login {
+                    item.username = login.username.take();
+                    item.password = login.password.take();
+                    item.totp_secret = login.totp.take();
+                    item.uris = std::mem::take(&mut login.uris)
                         .into_iter()
                         .filter_map(|u| {
                             u.uri.map(|uri| Uri {
@@ -171,14 +177,26 @@ pub fn import_bitwarden_json(data: &[u8]) -> Result<Vec<VaultItem>> {
                 }
             }
             3 => {
-                if let Some(card) = bw_item.card {
-                    item.cardholder = card.cardholder_name;
-                    item.card_number = card.number;
-                    item.cvv = card.code;
+                if let Some(mut card) = bw_item.card {
+                    item.cardholder = card.cardholder_name.take();
+                    item.card_number = card.number.take();
+                    item.cvv = card.code.take();
                     // Combine exp_month/exp_year into "MM/YY" format.
-                    item.expiry = match (card.exp_month, card.exp_year) {
+                    item.expiry = match (card.exp_month.take(), card.exp_year.take()) {
                         (Some(m), Some(y)) => {
-                            let year = if y.len() > 2 { &y[y.len() - 2..] } else { &y };
+                            // Use chars() to safely extract the last 2 characters,
+                            // avoiding panics on multi-byte UTF-8 input.
+                            let year: String = if y.chars().count() > 2 {
+                                y.chars()
+                                    .rev()
+                                    .take(2)
+                                    .collect::<Vec<_>>()
+                                    .into_iter()
+                                    .rev()
+                                    .collect()
+                            } else {
+                                y
+                            };
                             Some(format!("{m:0>2}/{year}"))
                         }
                         (Some(m), None) => Some(m),
@@ -188,15 +206,15 @@ pub fn import_bitwarden_json(data: &[u8]) -> Result<Vec<VaultItem>> {
                 }
             }
             4 => {
-                if let Some(ident) = bw_item.identity {
+                if let Some(mut ident) = bw_item.identity {
                     item.identity = Some(IdentityFields {
-                        first_name: ident.first_name,
-                        last_name: ident.last_name,
-                        address: ident.address1,
-                        city: ident.city,
-                        country: ident.country,
-                        phone: ident.phone,
-                        email: ident.email,
+                        first_name: ident.first_name.take(),
+                        last_name: ident.last_name.take(),
+                        address: ident.address1.take(),
+                        city: ident.city.take(),
+                        country: ident.country.take(),
+                        phone: ident.phone.take(),
+                        email: ident.email.take(),
                     });
                 }
             }
@@ -453,6 +471,32 @@ mod tests {
         assert_eq!(item.card_number.as_deref(), Some("4111111111111111"));
         assert_eq!(item.expiry.as_deref(), Some("12/28"));
         assert_eq!(item.cvv.as_deref(), Some("123"));
+    }
+
+    #[test]
+    fn bitwarden_import_card_multibyte_year_does_not_panic() {
+        // Regression: ensures multi-byte UTF-8 in exp_year doesn't panic.
+        let json = r#"{
+            "items": [{
+                "type": 3,
+                "name": "Weird Card",
+                "notes": null,
+                "favorite": false,
+                "card": {
+                    "cardholderName": "Test",
+                    "number": "4111111111111111",
+                    "expMonth": "01",
+                    "expYear": "年月日",
+                    "code": "999"
+                }
+            }]
+        }"#;
+
+        // Should not panic — gracefully handles non-ASCII year strings.
+        let items = import_bitwarden_json(json.as_bytes()).unwrap();
+        assert_eq!(items.len(), 1);
+        // Last 2 chars of "年月日" are "月日".
+        assert_eq!(items[0].expiry.as_deref(), Some("01/月日"));
     }
 
     #[test]
