@@ -10,6 +10,8 @@
 //! - [`nostr`]   — Nostr keypair, event signing, NIP-44 encryption, NIP-59 gift-wrap
 //! - [`sync`]    — Sync engine: message construction, Lamport clock, conflict resolution
 //! - [`audit`]   — Audit log, HMAC hash chain, chain verification
+//! - [`import`]  — Parsers for Bitwarden JSON, generic CSV, `.zvault-export`
+//! - [`export`]  — Writers for `.zvault-export`, plaintext JSON, plaintext CSV
 //! - [`error`]   — Unified error type
 //!
 //! ## Feature flags
@@ -28,6 +30,8 @@ pub mod audit;
 pub mod crypto;
 pub mod device;
 pub mod error;
+pub mod export;
+pub mod import;
 pub mod nostr;
 pub mod sync;
 pub mod vault;
