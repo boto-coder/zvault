@@ -10,7 +10,7 @@ interface VaultItem {
   uris?: { uri: string }[];
 }
 
-type View = "loading" | "unlock" | "items";
+type View = "loading" | "create" | "unlock" | "items";
 
 // ─── App ────────────────────────────────────────────────────────────────────
 
@@ -28,7 +28,13 @@ export function App() {
     if (response.unlocked) {
       await loadItems();
     } else {
-      setView("unlock");
+      // Check if a vault exists in storage
+      const stored = await browser.storage.local.get("vault");
+      if (stored.vault) {
+        setView("unlock");
+      } else {
+        setView("create");
+      }
     }
   }
 
@@ -45,30 +51,34 @@ export function App() {
 
   async function handleUnlock(password: string) {
     setError(null);
-    // Try to load existing vault from storage
     const stored = await browser.storage.local.get("vault");
-    if (stored.vault) {
-      const response = await browser.runtime.sendMessage({
-        type: "UNLOCK",
-        payload: { password, data: stored.vault },
-      });
-      if (response.error) {
-        setError(response.error);
-      } else {
-        await loadItems();
-      }
+    if (!stored.vault) {
+      // No vault — shouldn't happen from unlock view, but redirect to create
+      setView("create");
+      return;
+    }
+    const response = await browser.runtime.sendMessage({
+      type: "UNLOCK",
+      payload: { password, data: stored.vault },
+    });
+    if (response.error) {
+      setError(response.error);
     } else {
-      // No vault exists yet — create one
-      const response = await browser.runtime.sendMessage({
-        type: "CREATE",
-        payload: { password },
-      });
-      if (response.error) {
-        setError(response.error);
-      } else if (response.data) {
-        await browser.storage.local.set({ vault: response.data });
-        await loadItems();
-      }
+      await loadItems();
+    }
+  }
+
+  async function handleCreate(password: string) {
+    setError(null);
+    const response = await browser.runtime.sendMessage({
+      type: "CREATE",
+      payload: { password },
+    });
+    if (response.error) {
+      setError(response.error);
+    } else if (response.data) {
+      await browser.storage.local.set({ vault: response.data });
+      await loadItems();
     }
   }
 
@@ -79,8 +89,6 @@ export function App() {
   }
 
   async function handleCopyPassword(itemId: string) {
-    // For now, find the item in list and notify user.
-    // Full implementation would decrypt and copy to clipboard.
     const item = items.find((i) => i.id === itemId);
     if (item) {
       // In a full implementation, we'd fetch the password from the background
@@ -92,6 +100,8 @@ export function App() {
   switch (view) {
     case "loading":
       return <LoadingView />;
+    case "create":
+      return <CreateVaultView onCreate={handleCreate} error={error} />;
     case "unlock":
       return <UnlockView onUnlock={handleUnlock} error={error} />;
     case "items":
@@ -111,6 +121,131 @@ function LoadingView() {
   return (
     <div style={{ padding: "2rem", textAlign: "center" }}>
       <p>Loading ZVault…</p>
+    </div>
+  );
+}
+
+// ─── Create Vault ───────────────────────────────────────────────────────────
+
+function CreateVaultView({
+  onCreate,
+  error,
+}: {
+  onCreate: (password: string) => void;
+  error: string | null;
+}) {
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setValidationError(null);
+
+    if (!password.trim()) {
+      setValidationError("Password is required");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setValidationError("Passwords do not match");
+      return;
+    }
+    if (password.length < 8) {
+      setValidationError("Password must be at least 8 characters");
+      return;
+    }
+
+    setLoading(true);
+    await onCreate(password);
+    setLoading(false);
+  }
+
+  const displayError = validationError || error;
+
+  return (
+    <div style={{ padding: "1.5rem" }}>
+      <h1 style={{ fontSize: "1.25rem", marginBottom: "0.5rem" }}>
+        🔐 ZVault
+      </h1>
+      <h2 style={{ fontSize: "1rem", marginBottom: "1rem", color: "#aaa" }}>
+        Create New Vault
+      </h2>
+      <form onSubmit={handleSubmit}>
+        <label
+          htmlFor="create-password"
+          style={{ display: "block", marginBottom: "0.25rem", fontSize: "0.9rem" }}
+        >
+          Master Password
+        </label>
+        <input
+          id="create-password"
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Choose a strong master password"
+          autoFocus
+          disabled={loading}
+          style={{
+            width: "100%",
+            padding: "0.6rem",
+            borderRadius: "4px",
+            border: "1px solid #444",
+            background: "#16213e",
+            color: "#e0e0e0",
+            marginBottom: "0.75rem",
+            fontSize: "1rem",
+          }}
+        />
+        <label
+          htmlFor="confirm-password"
+          style={{ display: "block", marginBottom: "0.25rem", fontSize: "0.9rem" }}
+        >
+          Confirm Password
+        </label>
+        <input
+          id="confirm-password"
+          type="password"
+          value={confirmPassword}
+          onChange={(e) => setConfirmPassword(e.target.value)}
+          placeholder="Re-enter master password"
+          disabled={loading}
+          style={{
+            width: "100%",
+            padding: "0.6rem",
+            borderRadius: "4px",
+            border: "1px solid #444",
+            background: "#16213e",
+            color: "#e0e0e0",
+            marginBottom: "0.75rem",
+            fontSize: "1rem",
+          }}
+        />
+        {displayError && (
+          <p
+            style={{ color: "#ff6b6b", fontSize: "0.85rem", marginBottom: "0.5rem" }}
+            role="alert"
+          >
+            {displayError}
+          </p>
+        )}
+        <button
+          type="submit"
+          disabled={loading || !password.trim() || !confirmPassword.trim()}
+          style={{
+            width: "100%",
+            padding: "0.6rem",
+            borderRadius: "4px",
+            border: "none",
+            background: "#0f3460",
+            color: "#e0e0e0",
+            fontSize: "1rem",
+            cursor: loading ? "wait" : "pointer",
+          }}
+        >
+          {loading ? "Creating…" : "Create Vault"}
+        </button>
+      </form>
     </div>
   );
 }

@@ -5,6 +5,9 @@
   "description": "ZVault browser extension — encrypted password manager with Nostr sync",
   "type": "module",
   "scripts": {
+    "prebuild": "wasm-pack build ../../crates/zvault-wasm --target web --out-dir ../../apps/extension/public/wasm --no-typescript && rm -f public/wasm/.gitignore public/wasm/package.json",
+    "prebuild:firefox": "wasm-pack build ../../crates/zvault-wasm --target web --out-dir ../../apps/extension/public/wasm --no-typescript && rm -f public/wasm/.gitignore public/wasm/package.json",
+    "predev": "wasm-pack build ../../crates/zvault-wasm --target web --out-dir ../../apps/extension/public/wasm --no-typescript --dev && rm -f public/wasm/.gitignore public/wasm/package.json",
     "dev": "wxt",
     "dev:firefox": "wxt --browser firefox",
     "build": "wxt build",
@@ -24,5 +27,9 @@
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.7.2",
     "wxt": "^0.19.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "esbuild@0.25.12": true
   }
 }
