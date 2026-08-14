@@ -43,6 +43,13 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.8"
     }
+
+    packaging {
+        // JNA includes native libs for multiple platforms; avoid conflicts
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
 }
 
 dependencies {
@@ -72,9 +79,11 @@ dependencies {
     // Security — EncryptedSharedPreferences for local config
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
+    // JNA — required by UniFFI-generated Kotlin bindings for native calls
+    implementation("net.java.dev.jna:jna:5.14.0@aar")
+
     // UniFFI generated bindings (loaded as native .so via System.loadLibrary)
-    // The compiled native library is placed in jniLibs/ by the cargo-ndk build step
-    // implementation(project(":zvault-bindings"))
+    // The compiled native library is placed in jniLibs/<abi>/ by cargo-ndk
 
     // Testing
     testImplementation("junit:junit:4.13.2")
