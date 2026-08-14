@@ -80,6 +80,99 @@ Every item in `plan.md` must follow this structure:
 
 ---
 
+## Bug fixing workflow
+
+When the user reports a bug, follow this process:
+
+### Step 1 — Triage (subagent)
+
+Spawn a **triage subagent** that:
+1. Reads the bug description and identifies the affected module(s)
+2. Reproduces the bug (writes a failing test if possible)
+3. Identifies the root cause (reads relevant source code)
+4. Produces a **bug item** (see "Bug Item Format" below)
+5. Appends the bug item to `plan.md` under the `## Bugs` section
+
+### Step 2 — Confirm
+
+Present the bug analysis to the user:
+> "Bug triaged — root cause: <summary>. Fix approach: <approach>. Ready to fix?"
+
+Do NOT start fixing until the user confirms.
+
+### Step 3 — Fix (subagent + worktree)
+
+For each confirmed bug:
+1. Create a git branch: `fix/<bug-slug>`
+2. Create a git worktree: `../zvault-fix-<bug-slug>`
+3. Spawn a **fix subagent** working in that worktree that:
+   - Writes a regression test that reproduces the bug (test must FAIL before fix)
+   - Applies the fix
+   - Verifies the regression test now passes
+   - Follows the mandatory implementation workflow (fix → security-review → verify → commit → push)
+
+### Step 4 — Review and merge
+
+After the fix subagent completes:
+1. Run a **security review subagent** on the changed files
+2. Fix any CRITICAL/MEDIUM findings introduced by the fix
+3. Merge to main
+4. Mark the bug item as ✅ Fixed in `plan.md`
+5. Clean up the worktree
+
+---
+
+## Bug Item Format
+
+Every bug in `plan.md` must follow this structure:
+
+```markdown
+### B<number> — <Short title>
+
+**Status:** 🐛 Open | 🔧 Fixing | ✅ Fixed
+**Branch:** `fix/<slug>`
+**Reported:** <date>
+**Severity:** Critical | High | Medium | Low
+
+#### Description
+<What's broken — observed behaviour vs expected behaviour>
+<Steps to reproduce if applicable>
+
+#### Root Cause
+<Module, file, line — what's wrong and why>
+
+#### Fix Approach
+<How to fix it — what code changes are needed>
+
+#### Regression Test
+<Description of the test that will prevent this from recurring>
+
+#### Definition of Done
+- [ ] Regression test written (fails before fix, passes after)
+- [ ] Fix applied
+- [ ] No other tests broken (`cargo test --workspace --all-features`)
+- [ ] Zero clippy warnings
+- [ ] Security review completed (no new CRITICAL/MEDIUM)
+- [ ] Committed and pushed to branch
+
+#### Affected Files
+- <File paths that will be modified>
+```
+
+**Rules:**
+- Each bug is self-contained — a fixer should be able to resolve it without additional context
+- The regression test is MANDATORY — no bug fix ships without a test that would catch the bug
+- Root Cause must identify the specific code location, not just symptoms
+- Bugs are numbered sequentially (B1, B2, B3...) and never renumbered
+- Status transitions: 🐛 → 🔧 → ✅ (never backwards)
+- Severity levels:
+  - **Critical** — data loss, key compromise, crash on common operation
+  - **High** — security degradation, incorrect sync, data corruption
+  - **Medium** — wrong behaviour under specific conditions, UX breakage
+  - **Low** — cosmetic, edge case, minor inconvenience
+
+---
+
 ## The rule: security review before every commit
 
 **No code is committed until a security review has been run on it and all
