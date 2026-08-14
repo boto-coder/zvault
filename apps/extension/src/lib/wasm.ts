@@ -3,6 +3,10 @@
  *
  * Loads the zvault-wasm module and exposes typed wrappers for vault operations.
  * The WASM binary is loaded lazily on first use from the extension's bundled assets.
+ *
+ * Supports both:
+ * - Chrome MV3 service workers (dynamic import)
+ * - Firefox MV2 background scripts (fetch + WebAssembly.instantiate fallback)
  */
 
 export interface ZVaultWasm {
@@ -23,25 +27,50 @@ let wasmInstance: ZVaultWasm | null = null;
 export async function initWasm(): Promise<ZVaultWasm> {
   if (wasmInstance) return wasmInstance;
 
-  // Fetch the wasm-bindgen JS glue from the extension bundle.
-  // In a bundled extension, these files live under /wasm/ in the output dir.
   const wasmUrl = browser.runtime.getURL("/wasm/zvault_wasm_bg.wasm");
-
-  // Dynamic import of the wasm-bindgen glue.
-  // The glue JS is included in the extension bundle at build time.
   const glueUrl = browser.runtime.getURL("/wasm/zvault_wasm.js");
-  const glueModule = await import(/* @vite-ignore */ glueUrl);
 
-  // Initialise with the WASM binary URL.
-  await glueModule.default(wasmUrl);
+  let glueModule: Record<string, unknown>;
+
+  try {
+    // Preferred path: dynamic import (works in MV3 service workers and
+    // module-based contexts).
+    glueModule = await import(/* @vite-ignore */ glueUrl);
+  } catch {
+    // Fallback for Firefox MV2 background scripts where dynamic import of
+    // extension URLs may fail. Fetch the glue JS as text and evaluate it.
+    const resp = await fetch(glueUrl);
+    const glueText = await resp.text();
+
+    // The wasm-bindgen --target web glue exports an `init` default and named
+    // exports.  We create a blob module URL so the browser can parse it as ESM.
+    const blob = new Blob([glueText], { type: "application/javascript" });
+    const blobUrl = URL.createObjectURL(blob);
+    try {
+      glueModule = await import(/* @vite-ignore */ blobUrl);
+    } finally {
+      URL.revokeObjectURL(blobUrl);
+    }
+  }
+
+  // The default export is the `init` function from wasm-bindgen --target web.
+  const init = glueModule.default as (
+    input?: string | URL | Request | Response | BufferSource | WebAssembly.Module
+  ) => Promise<unknown>;
+
+  // Fetch the WASM binary and instantiate. Using fetch + arrayBuffer ensures
+  // compatibility with contexts where streaming instantiation is unavailable.
+  const wasmResponse = await fetch(wasmUrl);
+  const wasmBytes = await wasmResponse.arrayBuffer();
+  await init(wasmBytes);
 
   wasmInstance = {
-    create_vault: glueModule.create_vault,
-    open_vault: glueModule.open_vault,
-    encrypt_vault: glueModule.encrypt_vault,
-    add_item: glueModule.add_item,
-    list_items: glueModule.list_items,
-    generate_totp: glueModule.generate_totp,
+    create_vault: glueModule.create_vault as ZVaultWasm["create_vault"],
+    open_vault: glueModule.open_vault as ZVaultWasm["open_vault"],
+    encrypt_vault: glueModule.encrypt_vault as ZVaultWasm["encrypt_vault"],
+    add_item: glueModule.add_item as ZVaultWasm["add_item"],
+    list_items: glueModule.list_items as ZVaultWasm["list_items"],
+    generate_totp: glueModule.generate_totp as ZVaultWasm["generate_totp"],
   };
 
   return wasmInstance;

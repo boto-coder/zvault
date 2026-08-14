@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   srcDir: "src",
+  publicDir: "../public",
   modules: [],
   vite: () => ({
     plugins: [react()],
@@ -23,5 +24,11 @@ export default defineConfig({
       extension_pages:
         "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
     },
+    web_accessible_resources: [
+      {
+        resources: ["wasm/*"],
+        matches: ["<all_urls>"],
+      },
+    ],
   },
 });
