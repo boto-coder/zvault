@@ -1,0 +1,93 @@
+/* ZVault Landing Page — Custom Styles */
+
+:root {
+  --accent: #10b981;
+  --accent-hover: #34d399;
+  --bg-primary: #0f172a;
+  --bg-secondary: #1e293b;
+  --bg-card: #1e293b;
+  --border: #334155;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* Hero gradient background */
+.hero-gradient {
+  background: radial-gradient(ellipse at 50% 0%, rgba(16, 185, 129, 0.15) 0%, transparent 60%),
+              linear-gradient(180deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+}
+
+/* Feature card hover effect */
+.feature-card {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.feature-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 40px rgba(16, 185, 129, 0.1);
+}
+
+/* CTA button glow */
+.btn-glow {
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.3);
+  transition: box-shadow 0.2s ease, transform 0.1s ease;
+}
+
+.btn-glow:hover {
+  box-shadow: 0 0 30px rgba(16, 185, 129, 0.5);
+  transform: translateY(-1px);
+}
+
+/* Platform icons */
+.platform-icon {
+  transition: transform 0.2s ease;
+}
+
+.platform-icon:hover {
+  transform: scale(1.1);
+}
+
+/* Animated lock icon */
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.lock-glow {
+  animation: pulse-glow 3s ease-in-out infinite;
+}
+
+/* Section divider */
+.section-divider {
+  background: linear-gradient(90deg, transparent, var(--border), transparent);
+  height: 1px;
+}
+
+/* How it works step connector */
+.step-connector {
+  background: linear-gradient(180deg, var(--accent), transparent);
+}
+
+/* Code block styling */
+.code-block {
+  background: #0d1117;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* Screenshot placeholder */
+.screenshot-placeholder {
+  background: linear-gradient(135deg, var(--bg-secondary), #0f172a);
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+}

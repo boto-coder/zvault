@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ZVault — Local-First Encrypted Password Manager</title>
+  <meta name="description" content="ZVault is a privacy-focused password manager with end-to-end encryption and decentralised sync via Nostr. No server required.">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            accent: '#10b981',
+            'accent-hover': '#34d399',
+            'bg-primary': '#0f172a',
+            'bg-secondary': '#1e293b',
+            'bg-card': '#1e293b',
+            border: '#334155',
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+          },
+        },
+      },
+    }
+  </script>
+</head>
+<body class="bg-bg-primary text-slate-100 font-sans antialiased">
+
+  <!-- Navigation -->
+  <nav class="fixed top-0 w-full z-50 bg-bg-primary/80 backdrop-blur-lg border-b border-border">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16">
+        <div class="flex items-center gap-2">
+          <span class="text-2xl">🔐</span>
+          <span class="text-xl font-bold text-white">ZVault</span>
+        </div>
+        <div class="hidden md:flex items-center gap-8">
+          <a href="#features" class="text-slate-300 hover:text-white transition-colors">Features</a>
+          <a href="#platforms" class="text-slate-300 hover:text-white transition-colors">Platforms</a>
+          <a href="#how-it-works" class="text-slate-300 hover:text-white transition-colors">How It Works</a>
+          <a href="#security" class="text-slate-300 hover:text-white transition-colors">Security</a>
+          <a href="https://github.com/boto-coder/zvault" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white font-medium hover:bg-accent-hover transition-colors">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+            GitHub
+          </a>
+        </div>
+        <!-- Mobile menu button -->
+        <button id="mobile-menu-btn" class="md:hidden p-2 text-slate-300 hover:text-white">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+      </div>
+    </div>
+    <!-- Mobile menu -->
+    <div id="mobile-menu" class="hidden md:hidden border-t border-border bg-bg-primary/95 backdrop-blur-lg">
+      <div class="px-4 py-4 space-y-3">
+        <a href="#features" class="block text-slate-300 hover:text-white">Features</a>
+        <a href="#platforms" class="block text-slate-300 hover:text-white">Platforms</a>
+        <a href="#how-it-works" class="block text-slate-300 hover:text-white">How It Works</a>
+        <a href="#security" class="block text-slate-300 hover:text-white">Security</a>
+        <a href="https://github.com/boto-coder/zvault" class="block text-accent hover:text-accent-hover">GitHub →</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero Section -->
+  <section class="hero-gradient pt-32 pb-20 px-4 sm:px-6 lg:px-8">
+    <div class="max-w-7xl mx-auto text-center">
+      <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-accent/10 border border-accent/20 text-accent text-sm font-medium mb-8">
+        <span class="lock-glow">🔒</span>
+        v1.0 — Open Source & Free Forever
+      </div>
+
+      <h1 class="text-4xl sm:text-5xl lg:text-7xl font-extrabold tracking-tight mb-6">
+        Your passwords.<br>
+        <span class="text-accent">Your devices.</span><br>
+        No server required.
+      </h1>
+
+      <p class="text-lg sm:text-xl text-slate-400 max-w-3xl mx-auto mb-10">
+        ZVault is a local-first, end-to-end encrypted password manager that syncs across your devices using the Nostr protocol. No accounts, no cloud servers, no trust required.
+      </p>
+
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
+        <a href="https://github.com/boto-coder/zvault/releases" class="btn-glow inline-flex items-center gap-2 px-8 py-3.5 rounded-xl bg-accent text-white font-semibold text-lg hover:bg-accent-hover transition-colors">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+          Download v1.0
+        </a>
+        <a href="https://github.com/boto-coder/zvault" class="inline-flex items-center gap-2 px-8 py-3.5 rounded-xl border border-border text-slate-200 font-semibold text-lg hover:bg-bg-secondary transition-colors">
+          View Source
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+        </a>
+      </div>
+
+      <!-- Screenshot placeholder -->
+      <div class="max-w-5xl mx-auto">
+        <div class="screenshot-placeholder aspect-[16/10] flex items-center justify-center">
+          <div class="text-center text-slate-500">
+            <svg class="w-16 h-16 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+            <img src="assets/screenshots/desktop-main.png" alt="ZVault desktop application" class="hidden w-full rounded-lg shadow-2xl">
+            <p class="text-sm">Desktop App Preview</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features Section -->
+  <section id="features" class="py-24 px-4 sm:px-6 lg:px-8">
+    <div class="max-w-7xl mx-auto">
+      <div class="text-center mb-16">
+        <h2 class="text-3xl sm:text-4xl font-bold mb-4">Built for security. Designed for humans.</h2>
+        <p class="text-slate-400 text-lg max-w-2xl mx-auto">Every feature exists to keep your secrets safe without sacrificing usability.</p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <!-- Feature 1: Encryption -->
+        <div class="feature-card p-6 rounded-2xl bg-bg-card border border-border">
+          <div class="w-12 h-12 rounded-xl bg-accent/10 flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+          </div>
+          <h3 class="text-xl font-semibold mb-2">Military-Grade Encryption</h3>
+          <p class="text-slate-400">Argon2id key derivation + AES-256-GCM encryption. Memory-hard KDF resists GPU/ASIC attacks. Hardware-accelerated on modern CPUs.</p>
+        </div>
+
+        <!-- Feature 2: Decentralised Sync -->
+        <div class="feature-card p-6 rounded-2xl bg-bg-card border border-border">
+          <div class="w-12 h-12 rounded-xl bg-purple-500/10 flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+          </div>
+          <h3 class="text-xl font-semibold mb-2">Decentralised Sync</h3>
+          <p class="text-slate-400">Sync via Nostr relays (NIP-44/NIP-59). No central server, no account. Relays see only ciphertext — zero-knowledge by design.</p>
+        </div>
+
+        <!-- Feature 3: Biometric Unlock -->
+        <div class="feature-card p-6 rounded-2xl bg-bg-card border border-border">
+          <div class="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 11.5V14m0-2.5v-6a1.5 1.5 0 113 0m-3 6a1.5 1.5 0 00-3 0v2a7.5 7.5 0 0015 0v-5a1.5 1.5 0 00-3 0m-6-3V11m0-5.5v-1a1.5 1.5 0 013 0v1m0 0V11m0-5.5a1.5 1.5 0 013 0v3m0 0V11"/></svg>
+          </div>
+          <h3 class="text-xl font-semibold mb-2">Biometric Unlock</h3>
+          <p class="text-slate-400">Touch ID, Face ID, Windows Hello, Android fingerprint. OS-native secure enclave protects your vault key — never weakens encryption.</p>
+        </div>
+
+        <!-- Feature 4: Multi-Device Trust -->
+        <div class="feature-card p-6 rounded-2xl bg-bg-card border border-border">
+          <div class="w-12 h-12 rounded-xl bg-orange-500/10 flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+          </div>
+          <h3 class="text-xl font-semibold mb-2">Explicit Device Trust</h3>
+          <p class="text-slate-400">Every device is explicitly admitted with a secp256k1 keypair. Revocation is immediate. CRDT-based device list handles concurrent changes.</p>
+        </div>
+
+        <!-- Feature 5: TOTP -->
+        <div class="feature-card p-6 rounded-2xl bg-bg-card border border-border">
+          <div class="w-12 h-12 rounded-xl bg-cyan-500/10 flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          </div>
+          <h3 class="text-xl font-semibold mb-2">Built-in TOTP</h3>
+          <p class="text-slate-400">RFC 6238 TOTP generation built right in. No separate authenticator app needed. Secrets stored encrypted alongside your passwords.</p>
+        </div>
+
+        <!-- Feature 6: Audit Log -->
+        <div class="feature-card p-6 rounded-2xl bg-bg-card border border-border">
+          <div class="w-12 h-12 rounded-xl bg-rose-500/10 flex items-center justify-center mb-4">
+            <svg class="w-6 h-6 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>
+          </div>
+          <h3 class="text-xl font-semibold mb-2">Tamper-Evident Audit Log</h3>
+          <p class="text-slate-400">HMAC-SHA256 hash chain records every vault action. Any tampering is instantly detectable. Full or partial chain verification.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="section-divider max-w-5xl mx-auto"></div>
+
+  <!-- Platforms Section -->
+  <section id="platforms" class="py-24 px-4 sm:px-6 lg:px-8">
+    <div class="max-w-7xl mx-auto text-center">
+      <h2 class="text-3xl sm:text-4xl font-bold mb-4">One vault. Every device.</h2>
+      <p class="text-slate-400 text-lg max-w-2xl mx-auto mb-16">Native apps for every platform, all powered by the same Rust core library.</p>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 max-w-4xl mx-auto">
+        <!-- Desktop -->
+        <div class="platform-icon p-8 rounded-2xl bg-bg-card border border-border text-center">
+          <svg class="w-12 h-12 mx-auto mb-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+          <h3 class="font-semibold mb-1">Desktop</h3>
+          <p class="text-sm text-slate-400">macOS · Windows · Linux</p>
+          <p class="text-xs text-slate-500 mt-2">Tauri v2</p>
+        </div>
+
+        <!-- Browser -->
+        <div class="platform-icon p-8 rounded-2xl bg-bg-card border border-border text-center">
+          <svg class="w-12 h-12 mx-auto mb-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/></svg>
+          <h3 class="font-semibold mb-1">Browser</h3>
+          <p class="text-sm text-slate-400">Chrome · Firefox · Safari</p>
+          <p class="text-xs text-slate-500 mt-2">WXT + WASM</p>
+        </div>
+
+        <!-- Android -->
+        <div class="platform-icon p-8 rounded-2xl bg-bg-card border border-border text-center">
+          <svg class="w-12 h-12 mx-auto mb-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+          <h3 class="font-semibold mb-1">Android</h3>
+          <p class="text-sm text-slate-400">Phones · Tablets</p>
+          <p class="text-xs text-slate-500 mt-2">Kotlin + UniFFI</p>
+        </div>
+
+        <!-- CLI -->
+        <div class="platform-icon p-8 rounded-2xl bg-bg-card border border-border text-center">
+          <svg class="w-12 h-12 mx-auto mb-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+          <h3 class="font-semibold mb-1">CLI</h3>
+          <p class="text-sm text-slate-400">Scripting · Automation</p>
+          <p class="text-xs text-slate-500 mt-2">Rust / clap</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="section-divider max-w-5xl mx-auto"></div>
+
+  <!-- How It Works Section -->
+  <section id="how-it-works" class="py-24 px-4 sm:px-6 lg:px-8">
+    <div class="max-w-5xl mx-auto">
+      <div class="text-center mb-16">
+        <h2 class="text-3xl sm:text-4xl font-bold mb-4">How it works</h2>
+        <p class="text-slate-400 text-lg">Simple concept. Bulletproof implementation.</p>
+      </div>
+
+      <div class="space-y-12">
+        <!-- Step 1 -->
+        <div class="flex items-start gap-6">
+          <div class="flex-shrink-0 w-12 h-12 rounded-full bg-accent/20 border-2 border-accent flex items-center justify-center font-bold text-accent">1</div>
+          <div>
+            <h3 class="text-xl font-semibold mb-2">Create your vault</h3>
+            <p class="text-slate-400">Choose a master password. ZVault derives a 256-bit encryption key using Argon2id (64 MiB memory, 3 iterations) — making brute-force attacks computationally infeasible.</p>
+          </div>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="flex items-start gap-6">
+          <div class="flex-shrink-0 w-12 h-12 rounded-full bg-accent/20 border-2 border-accent flex items-center justify-center font-bold text-accent">2</div>
+          <div>
+            <h3 class="text-xl font-semibold mb-2">Add your secrets</h3>
+            <p class="text-slate-400">Logins, secure notes, cards, identities — all stored in a single encrypted file. AES-256-GCM ensures both confidentiality and integrity. The file header is authenticated, preventing downgrade attacks.</p>
+          </div>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="flex items-start gap-6">
+          <div class="flex-shrink-0 w-12 h-12 rounded-full bg-accent/20 border-2 border-accent flex items-center justify-center font-bold text-accent">3</div>
+          <div>
+            <h3 class="text-xl font-semibold mb-2">Admit devices</h3>
+            <p class="text-slate-400">Each device generates a secp256k1 keypair. Admit devices explicitly — no implicit trust. The device list uses a CRDT (OR-Set) so concurrent changes merge cleanly.</p>
+          </div>
+        </div>
+
+        <!-- Step 4 -->
+        <div class="flex items-start gap-6">
+          <div class="flex-shrink-0 w-12 h-12 rounded-full bg-accent/20 border-2 border-accent flex items-center justify-center font-bold text-accent">4</div>
+          <div>
+            <h3 class="text-xl font-semibold mb-2">Sync over Nostr</h3>
+            <p class="text-slate-400">Vault changes are encrypted with NIP-44, signed with NIP-01, and wrapped with NIP-59 (gift-wrap) before being published to relays. Relays see only ciphertext and an ephemeral key — not your identity or your data.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="section-divider max-w-5xl mx-auto"></div>
+
+  <!-- Security Section -->
+  <section id="security" class="py-24 px-4 sm:px-6 lg:px-8">
+    <div class="max-w-7xl mx-auto">
+      <div class="text-center mb-16">
+        <h2 class="text-3xl sm:text-4xl font-bold mb-4">Security by design</h2>
+        <p class="text-slate-400 text-lg max-w-2xl mx-auto">Not an afterthought. Every layer is built to minimize trust and maximize verifiability.</p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-5xl mx-auto">
+        <div class="p-6 rounded-xl bg-bg-card border border-border">
+          <h3 class="font-semibold text-lg mb-3 flex items-center gap-2">
+            <span class="text-accent">◆</span> Zero-Knowledge Sync
+          </h3>
+          <p class="text-slate-400 text-sm">Nostr relays never see plaintext. NIP-59 gift-wrap hides even the sender's real public key. Credentials exist only on your devices.</p>
+        </div>
+
+        <div class="p-6 rounded-xl bg-bg-card border border-border">
+          <h3 class="font-semibold text-lg mb-3 flex items-center gap-2">
+            <span class="text-accent">◆</span> Memory Safety
+          </h3>
+          <p class="text-slate-400 text-sm">Written in Rust. All secret buffers are zeroed on drop via the <code class="text-accent/80">zeroize</code> crate. Keys never implement <code class="text-accent/80">Clone</code> or <code class="text-accent/80">Copy</code>.</p>
+        </div>
+
+        <div class="p-6 rounded-xl bg-bg-card border border-border">
+          <h3 class="font-semibold text-lg mb-3 flex items-center gap-2">
+            <span class="text-accent">◆</span> Authenticated Headers
+          </h3>
+          <p class="text-slate-400 text-sm">The full file header (magic, salt, KDF params, IV) is included in AES-GCM's Additional Authenticated Data. Any header tampering causes immediate rejection.</p>
+        </div>
+
+        <div class="p-6 rounded-xl bg-bg-card border border-border">
+          <h3 class="font-semibold text-lg mb-3 flex items-center gap-2">
+            <span class="text-accent">◆</span> Forward Upgradability
+          </h3>
+          <p class="text-slate-400 text-sm">KDF parameters are stored per-file. Future versions can increase cost params without breaking existing vaults. Re-key upgrades the entire vault atomically.</p>
+        </div>
+
+        <div class="p-6 rounded-xl bg-bg-card border border-border">
+          <h3 class="font-semibold text-lg mb-3 flex items-center gap-2">
+            <span class="text-accent">◆</span> Fuzz Tested
+          </h3>
+          <p class="text-slate-400 text-sm">Vault parser, import parsers, and Nostr handler are continuously fuzz-tested with <code class="text-accent/80">cargo-fuzz</code>. Property-based tests via <code class="text-accent/80">proptest</code>.</p>
+        </div>
+
+        <div class="p-6 rounded-xl bg-bg-card border border-border">
+          <h3 class="font-semibold text-lg mb-3 flex items-center gap-2">
+            <span class="text-accent">◆</span> Auditable & Open
+          </h3>
+          <p class="text-slate-400 text-sm">100% open source. Full threat model documented in DESIGN.md. Every security decision is recorded with rationale. No telemetry, no analytics.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="section-divider max-w-5xl mx-auto"></div>
+
+  <!-- Open Source Section -->
+  <section id="open-source" class="py-24 px-4 sm:px-6 lg:px-8">
+    <div class="max-w-4xl mx-auto text-center">
+      <h2 class="text-3xl sm:text-4xl font-bold mb-4">Open source. Always.</h2>
+      <p class="text-slate-400 text-lg mb-10">ZVault is dual-licensed under MIT and Apache 2.0. Fork it, audit it, build on it.</p>
+
+      <div class="code-block p-6 text-left mb-10">
+        <div class="flex items-center gap-2 mb-4">
+          <div class="w-3 h-3 rounded-full bg-red-500"></div>
+          <div class="w-3 h-3 rounded-full bg-yellow-500"></div>
+          <div class="w-3 h-3 rounded-full bg-green-500"></div>
+          <span class="ml-4 text-xs text-slate-500">terminal</span>
+        </div>
+        <pre class="text-sm text-slate-300 overflow-x-auto"><code><span class="text-slate-500">$</span> git clone https://github.com/boto-coder/zvault.git
+<span class="text-slate-500">$</span> cd zvault
+<span class="text-slate-500">$</span> cargo build --workspace
+<span class="text-slate-500">$</span> cargo test --workspace --all-features
+<span class="text-accent">   Compiling</span> zvault-core v1.0.0
+<span class="text-accent">   Compiling</span> zvault-cli v1.0.0
+<span class="text-accent">     Running</span> 106 tests
+<span class="text-accent">test result:</span> ok. 106 passed; 0 failed</code></pre>
+      </div>
+
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+        <a href="https://github.com/boto-coder/zvault" class="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-bg-card border border-border text-slate-200 font-medium hover:bg-bg-secondary transition-colors">
+          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+          Star on GitHub
+        </a>
+        <a href="https://github.com/boto-coder/zvault/blob/main/DESIGN.md" class="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-bg-card border border-border text-slate-200 font-medium hover:bg-bg-secondary transition-colors">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+          Read DESIGN.md
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="border-t border-border py-12 px-4 sm:px-6 lg:px-8">
+    <div class="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
+      <div class="flex items-center gap-2">
+        <span class="text-xl">🔐</span>
+        <span class="font-semibold text-white">ZVault</span>
+        <span class="text-slate-500 text-sm ml-2">v1.0</span>
+      </div>
+      <div class="flex items-center gap-6 text-sm text-slate-400">
+        <a href="https://github.com/boto-coder/zvault" class="hover:text-white transition-colors">GitHub</a>
+        <a href="https://github.com/boto-coder/zvault/blob/main/DESIGN.md" class="hover:text-white transition-colors">Docs</a>
+        <a href="https://github.com/boto-coder/zvault/releases" class="hover:text-white transition-colors">Releases</a>
+        <a href="https://github.com/boto-coder/zvault/security/advisories/new" class="hover:text-white transition-colors">Report Vulnerability</a>
+      </div>
+      <p class="text-sm text-slate-500">MIT / Apache-2.0</p>
+    </div>
+  </footer>
+
+  <!-- Mobile menu toggle script -->
+  <script>
+    document.getElementById('mobile-menu-btn').addEventListener('click', function() {
+      document.getElementById('mobile-menu').classList.toggle('hidden');
+    });
+    // Close mobile menu on link click
+    document.querySelectorAll('#mobile-menu a').forEach(function(link) {
+      link.addEventListener('click', function() {
+        document.getElementById('mobile-menu').classList.add('hidden');
+      });
+    });
+  </script>
+</body>
+</html>
