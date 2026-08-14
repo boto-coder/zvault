@@ -4,6 +4,11 @@
 
 All milestones M0-M12 complete. Preparing for release.
 
+## Backlog
+
+<!-- New plan items are appended here by the planning subagent -->
+<!-- Format: see process.md "Plan Item Format" -->
+
 ## Milestone overview
 
 | Milestone | Name | Status |

@@ -1,11 +1,91 @@
 # ZVault — Development Process Steering
 
+## Feature planning workflow
+
+When the user requests a new feature or enhancement, follow this process:
+
+### Step 1 — Plan (subagent)
+
+Spawn a **planning subagent** that:
+1. Reads the feature request and existing code/docs for context
+2. Asks clarifying questions if the scope is ambiguous (present questions to the user, wait for answers)
+3. Produces a **plan item** (see "Plan Item Format" below)
+4. Appends the plan item to `plan.md` under the `## Backlog` section
+
+### Step 2 — Confirm
+
+Present the plan item summary to the user and ask:
+> "Plan added to plan.md. Ready to start implementation?"
+
+Do NOT start implementation until the user confirms.
+
+### Step 3 — Implement (subagent + worktree)
+
+For each unfinished plan item the user approves:
+1. Create a git branch: `feat/<item-slug>`
+2. Create a git worktree: `../zvault-<item-slug>`
+3. Spawn an **implementation subagent** working in that worktree
+4. The subagent follows the mandatory implementation workflow (implement → security-review → fix → verify → commit → push)
+
+### Step 4 — Review and merge
+
+After the implementation subagent completes:
+1. Run a **security review subagent** on the worktree
+2. Fix any CRITICAL/MEDIUM findings
+3. Create a PR or merge directly to main (per user preference)
+4. Mark the plan item as ✅ Done in `plan.md`
+5. Clean up the worktree
+
+---
+
+## Plan Item Format
+
+Every item in `plan.md` must follow this structure:
+
+```markdown
+### P<number> — <Short title>
+
+**Status:** 🔲 Planned | 🚧 In Progress | ✅ Done
+**Branch:** `feat/<slug>`
+**Requested:** <date>
+
+#### Description
+<What the feature does, why it's needed, user-facing behaviour>
+
+#### Scope
+- <Bullet list of specific deliverables>
+- <Files to create/modify>
+- <Dependencies on other items>
+
+#### Definition of Done
+- [ ] <Specific testable criterion 1>
+- [ ] <Specific testable criterion 2>
+- [ ] All tests pass (`cargo test --workspace --all-features`)
+- [ ] Zero clippy warnings
+- [ ] Security review completed (no CRITICAL/MEDIUM open)
+- [ ] Committed and pushed to branch
+
+#### Expected Outputs
+- <File paths of new/modified files>
+- <Artifacts produced (binaries, packages, etc.)>
+- <Documentation updates>
+```
+
+**Rules:**
+- Each plan item is self-contained — an implementer should be able to complete it without additional context
+- The Definition of Done must be concrete and verifiable (not subjective)
+- Expected Outputs list every file that will be created or modified
+- Items are numbered sequentially (P1, P2, P3...) and never renumbered
+- Status transitions: 🔲 → 🚧 → ✅ (never backwards)
+
+---
+
 ## The rule: security review before every commit
 
 **No code is committed until a security review has been run on it and all
 findings of severity MEDIUM or higher are fixed.**
 
-This applies to every milestone, every feature branch, and every hotfix.
+This applies to every feature branch and every hotfix.
 Low and informational findings must be triaged (fixed or explicitly accepted
 with a written rationale) before the commit lands on `main`.
 
