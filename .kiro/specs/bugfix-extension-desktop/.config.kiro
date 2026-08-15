@@ -1,0 +1,5 @@
+{
+  "name": "bugfix-extension-desktop",
+  "description": "Fix extension save item failing with missing id + pairing flow failing without device identity",
+  "status": "ready"
+}
