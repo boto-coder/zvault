@@ -167,6 +167,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "bech32"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3077,6 +3083,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
 dependencies = [
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
@@ -5497,6 +5504,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "base64 0.23.1",
+ "bech32",
  "chacha20 0.9.1",
  "chrono",
  "csv",
@@ -5508,6 +5516,7 @@ dependencies = [
  "rand 0.9.5",
  "rand_core 0.9.5",
  "rmp-serde",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
@@ -5526,6 +5535,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "chrono",
+ "hex",
  "serde",
  "serde_json",
  "tauri",

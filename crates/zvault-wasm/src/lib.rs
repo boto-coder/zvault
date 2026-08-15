@@ -261,6 +261,144 @@ pub fn encode_npub_from_hex(pubkey_hex: &str) -> Result<String, JsValue> {
     Ok(zvault_core::nip19::encode_npub(&array))
 }
 
+// ─── Pairing codec WASM bindings ─────────────────────────────────────────────
+
+/// Create an invite pairing code.
+///
+/// Returns a `zvault:` prefixed string suitable for display as a QR code.
+#[wasm_bindgen]
+pub fn create_invite_code(
+    pubkey_hex: &str,
+    label: &str,
+    vault_id: &str,
+) -> Result<String, JsValue> {
+    let vid = uuid::Uuid::parse_str(vault_id)
+        .map_err(|e| JsValue::from_str(&format!("invalid vault_id UUID: {e}")))?;
+    let payload = zvault_core::pairing::create_invite(pubkey_hex, label, vid)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    zvault_core::pairing::encode_pairing_code(&payload)
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// Create a join-request pairing code.
+///
+/// Returns a `zvault:` prefixed string suitable for display as a QR code.
+#[wasm_bindgen]
+pub fn create_join_request_code(pubkey_hex: &str, label: &str) -> Result<String, JsValue> {
+    let payload = zvault_core::pairing::create_join_request(pubkey_hex, label)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    zvault_core::pairing::encode_pairing_code(&payload)
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// Decode a pairing code and return the payload as a JSON object.
+///
+/// Returns a JS object with fields: v, t, p, l, vid, ts.
+#[wasm_bindgen]
+pub fn decode_pairing_code(code: &str) -> Result<JsValue, JsValue> {
+    let payload = zvault_core::pairing::decode_pairing_code(code)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    serde_wasm_bindgen::to_value(&payload)
+        .map_err(|e| JsValue::from_str(&format!("serialisation error: {e}")))
+}
+
+/// Create a response pairing code (invite-response or join-response).
+///
+/// `response_type` must be "invite_response" or "join_response".
+#[wasm_bindgen]
+pub fn create_response_code(
+    response_type: &str,
+    pubkey_hex: &str,
+    label: &str,
+    vault_id: Option<String>,
+) -> Result<String, JsValue> {
+    let payload = match response_type {
+        "invite_response" => zvault_core::pairing::create_invite_response(pubkey_hex, label)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?,
+        "join_response" => {
+            let vid_str = vault_id
+                .as_deref()
+                .ok_or_else(|| JsValue::from_str("vault_id required for join_response"))?;
+            let vid = uuid::Uuid::parse_str(vid_str)
+                .map_err(|e| JsValue::from_str(&format!("invalid vault_id: {e}")))?;
+            zvault_core::pairing::create_join_response(pubkey_hex, label, vid)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?
+        }
+        _ => {
+            return Err(JsValue::from_str(
+                "response_type must be 'invite_response' or 'join_response'",
+            ))
+        }
+    };
+    zvault_core::pairing::encode_pairing_code(&payload)
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// Admit a device from a pairing payload and return the updated vault JSON.
+///
+/// `vault_json` is the current vault state.
+/// `remote_pubkey` and `label` come from the decoded pairing payload.
+#[wasm_bindgen]
+pub fn admit_device_from_pairing(
+    vault_json: &str,
+    remote_pubkey: &str,
+    label: &str,
+) -> Result<String, JsValue> {
+    // Validate remote_pubkey: must be exactly 64 hex characters.
+    if remote_pubkey.len() != 64 || !remote_pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(JsValue::from_str(
+            "Invalid public key: must be 64 hex characters",
+        ));
+    }
+    // Validate label: must be non-empty after trimming.
+    if label.trim().is_empty() {
+        return Err(JsValue::from_str("Device label is required"));
+    }
+
+    let mut vault: Vault = serde_json::from_str(vault_json)
+        .map_err(|e| JsValue::from_str(&format!("invalid vault JSON: {e}")))?;
+
+    // Check for duplicate or revoked device with the same pubkey.
+    let normalized_pubkey = remote_pubkey.to_lowercase();
+    for existing in &vault.devices {
+        if existing.nostr_pubkey == normalized_pubkey {
+            if existing.revoked {
+                return Err(JsValue::from_str(
+                    "Device with this public key was previously revoked and cannot be re-admitted",
+                ));
+            } else {
+                return Err(JsValue::from_str(
+                    "Device with this public key is already admitted",
+                ));
+            }
+        }
+    }
+
+    let device_id = uuid::Uuid::new_v4();
+    let added_by = vault
+        .devices
+        .first()
+        .map(|d| d.device_id)
+        .unwrap_or(device_id);
+
+    let entry = zvault_core::vault::DeviceEntry {
+        device_id,
+        nostr_pubkey: normalized_pubkey,
+        label: label.trim().to_string(),
+        added_at: chrono::Utc::now(),
+        added_by,
+        revoked: false,
+        revoked_at: None,
+        revoked_by: None,
+    };
+    vault.devices.push(entry);
+    vault.version += 1;
+    vault.updated_at = chrono::Utc::now();
+
+    serde_json::to_string(&vault)
+        .map_err(|e| JsValue::from_str(&format!("serialisation error: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

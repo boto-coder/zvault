@@ -163,6 +163,12 @@ enum Commands {
         action: DeviceAction,
     },
 
+    /// Device pairing subcommands (invite/join-request flows).
+    Pair {
+        #[command(subcommand)]
+        action: PairAction,
+    },
+
     /// Vault sync subcommands (send/receive via Nostr relay).
     Sync {
         #[command(subcommand)]
@@ -223,6 +229,34 @@ enum DeviceAction {
         /// Path to the vault file.
         #[arg(long, short, env = "ZVAULT_PATH")]
         vault: PathBuf,
+    },
+}
+
+/// Pairing subcommands (device invite/join-request flows).
+#[derive(Subcommand, Debug)]
+enum PairAction {
+    /// Generate an invite code for a new device to join this vault.
+    Invite {
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+    },
+    /// Generate a join-request code to request access to a vault.
+    Request {
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+    },
+    /// Import and process a pairing code (invite, join-request, or response).
+    Import {
+        /// The pairing code to import (starts with zvault:).
+        code: String,
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+        /// Skip confirmation prompt.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -1466,6 +1500,208 @@ fn cmd_device_export_key(vault_path: PathBuf) -> Result<()> {
     Ok(())
 }
 
+// ─── Pairing Commands ────────────────────────────────────────────────────────
+
+fn cmd_pair_invite(vault_path: PathBuf) -> Result<()> {
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (_vf, key, vault) = result?;
+
+    // Load device identity to get our pubkey and label.
+    let device = load_device_identity(&vault_path, &key)?;
+
+    let payload =
+        zvault_core::pairing::create_invite(&device.pubkey_hex, &device.label, vault.vault_id)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let code =
+        zvault_core::pairing::encode_pairing_code(&payload).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Invite code (share with the other device):\n");
+    println!("{code}");
+    println!("\nThe other device should run: zvault pair import <code> --vault <path>");
+    Ok(())
+}
+
+fn cmd_pair_request(vault_path: PathBuf) -> Result<()> {
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (_vf, key, _vault) = result?;
+
+    // Load device identity.
+    let device = load_device_identity(&vault_path, &key)?;
+
+    let payload = zvault_core::pairing::create_join_request(&device.pubkey_hex, &device.label)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let code =
+        zvault_core::pairing::encode_pairing_code(&payload).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Join-request code (share with an admin device):\n");
+    println!("{code}");
+    println!("\nThe admin device should run: zvault pair import <code> --vault <path>");
+    Ok(())
+}
+
+fn cmd_pair_import(vault_path: PathBuf, code: String, yes: bool) -> Result<()> {
+    let payload =
+        zvault_core::pairing::decode_pairing_code(&code).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Pairing code decoded:");
+    println!("  Type:   {:?}", payload.t);
+    println!("  Pubkey: {}", payload.p);
+    println!("  Label:  {}", payload.l);
+    if let Some(vid) = payload.vid {
+        println!("  Vault:  {vid}");
+    }
+    println!(
+        "  Time:   {}",
+        chrono::DateTime::from_timestamp(payload.ts, 0)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+            .unwrap_or_else(|| payload.ts.to_string())
+    );
+    println!();
+
+    use zvault_core::pairing::PairingType;
+
+    match payload.t {
+        PairingType::Invite | PairingType::JoinRequest => {
+            // We need to admit this device to our vault.
+            if !yes {
+                let answer = prompt_line("Admit this device to your vault? [y/N]: ")?;
+                if !matches!(answer.to_lowercase().as_str(), "y" | "yes") {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+            }
+
+            let mut password = get_password("Enter master password: ")?;
+            let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+            password.zeroize();
+            let (vf, key, mut vault) = result?;
+
+            // Check for duplicate or revoked device with the same pubkey.
+            let normalized_pubkey = payload.p.to_lowercase();
+            for existing in &vault.devices {
+                if existing.nostr_pubkey == normalized_pubkey {
+                    if existing.revoked {
+                        bail!("Device with this public key was previously revoked and cannot be re-admitted");
+                    } else {
+                        bail!("Device with this public key is already admitted");
+                    }
+                }
+            }
+
+            // Admit the remote device.
+            let now = chrono::Utc::now();
+            let device_id = Uuid::new_v4();
+            let added_by = vault
+                .devices
+                .first()
+                .map(|d| d.device_id)
+                .unwrap_or(device_id);
+
+            let entry = zvault_core::vault::DeviceEntry {
+                device_id,
+                nostr_pubkey: normalized_pubkey,
+                label: payload.l.clone(),
+                added_at: now,
+                added_by,
+                revoked: false,
+                revoked_at: None,
+                revoked_by: None,
+            };
+            vault.devices.push(entry);
+            vault.version += 1;
+            vault.updated_at = now;
+            vf.save(&key, &vault).context("failed to save vault")?;
+
+            println!("✓ Device admitted: {} ({})", payload.l, device_id);
+
+            // Generate response code if we have a device identity.
+            if let Ok(device) = load_device_identity(&vault_path, &key) {
+                let response_payload = match payload.t {
+                    PairingType::Invite => zvault_core::pairing::create_invite_response(
+                        &device.pubkey_hex,
+                        &device.label,
+                    )
+                    .map_err(|e| anyhow::anyhow!("{e}"))?,
+                    PairingType::JoinRequest => zvault_core::pairing::create_join_response(
+                        &device.pubkey_hex,
+                        &device.label,
+                        vault.vault_id,
+                    )
+                    .map_err(|e| anyhow::anyhow!("{e}"))?,
+                    _ => unreachable!(),
+                };
+                let response_code = zvault_core::pairing::encode_pairing_code(&response_payload)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                println!("\nResponse code (send back to the other device):\n");
+                println!("{response_code}");
+            }
+        }
+        PairingType::InviteResponse | PairingType::JoinResponse => {
+            // The remote device has responded — admit them.
+            if !yes {
+                let answer = prompt_line("Complete pairing (admit this device)? [y/N]: ")?;
+                if !matches!(answer.to_lowercase().as_str(), "y" | "yes") {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+            }
+
+            let mut password = get_password("Enter master password: ")?;
+            let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+            password.zeroize();
+            let (vf, key, mut vault) = result?;
+
+            // Check for duplicate or revoked device with the same pubkey.
+            let normalized_pubkey = payload.p.to_lowercase();
+            for existing in &vault.devices {
+                if existing.nostr_pubkey == normalized_pubkey {
+                    if existing.revoked {
+                        bail!("Device with this public key was previously revoked and cannot be re-admitted");
+                    } else {
+                        bail!("Device with this public key is already admitted");
+                    }
+                }
+            }
+
+            let now = chrono::Utc::now();
+            let device_id = Uuid::new_v4();
+            let added_by = vault
+                .devices
+                .first()
+                .map(|d| d.device_id)
+                .unwrap_or(device_id);
+
+            let entry = zvault_core::vault::DeviceEntry {
+                device_id,
+                nostr_pubkey: normalized_pubkey,
+                label: payload.l.clone(),
+                added_at: now,
+                added_by,
+                revoked: false,
+                revoked_at: None,
+                revoked_by: None,
+            };
+            vault.devices.push(entry);
+            vault.version += 1;
+            vault.updated_at = now;
+            vf.save(&key, &vault).context("failed to save vault")?;
+
+            println!(
+                "✓ Pairing complete. Device admitted: {} ({})",
+                payload.l, device_id
+            );
+        }
+    }
+
+    Ok(())
+}
+
 // ─── Sync Commands ───────────────────────────────────────────────────────────
 
 fn cmd_sync_send(
@@ -1891,6 +2127,11 @@ fn main() -> Result<()> {
             DeviceAction::Init { vault, label } => cmd_device_init(vault, label),
             DeviceAction::Show { vault } => cmd_device_show(vault),
             DeviceAction::ExportKey { vault } => cmd_device_export_key(vault),
+        },
+        Commands::Pair { action } => match action {
+            PairAction::Invite { vault } => cmd_pair_invite(vault),
+            PairAction::Request { vault } => cmd_pair_request(vault),
+            PairAction::Import { code, vault, yes } => cmd_pair_import(vault, code, yes),
         },
         Commands::Sync { action } => match action {
             SyncAction::Send {

@@ -49,6 +49,10 @@ pub enum Error {
     /// A base64 decoding error.
     #[error("base64 decode error: {0}")]
     Base64(#[from] base64::DecodeError),
+
+    /// An invalid or malformed pairing code.
+    #[error("invalid pairing code: {0}")]
+    InvalidPairingCode(String),
 }
 
 /// Convenience `Result` alias for `zvault-core`.

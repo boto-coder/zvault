@@ -269,6 +269,11 @@ pub struct BiometricUnlockConfig {
 pub struct Vault {
     /// Stable vault identifier (random UUID, never changes).
     pub id: Uuid,
+    /// Stable vault identity UUID used for pairing codes.
+    /// Distinct from `id` to maintain backward compatibility: existing vaults
+    /// that lack this field will get a new random UUID on deserialisation.
+    #[serde(default = "Uuid::new_v4")]
+    pub vault_id: Uuid,
     /// Monotonically increasing write counter. Incremented on every mutation.
     pub version: u64,
     /// Creation timestamp (UTC).
@@ -293,6 +298,7 @@ impl Vault {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
+            vault_id: Uuid::new_v4(),
             version: 0,
             created_at: now,
             updated_at: now,

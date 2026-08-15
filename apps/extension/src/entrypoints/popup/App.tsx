@@ -938,6 +938,14 @@ function DevicesView({
   const [admitError, setAdmitError] = useState<string | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
 
+  // Pairing state
+  const [showPairing, setShowPairing] = useState<"invite" | "request" | "paste" | null>(null);
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [pasteCode, setPasteCode] = useState("");
+  const [pairingInfo, setPairingInfo] = useState<{ t: string; p: string; l: string; vid?: string } | null>(null);
+  const [pairingResponse, setPairingResponse] = useState<string | null>(null);
+  const [pairingError, setPairingError] = useState<string | null>(null);
+
   // Device pubkey card state
   const [deviceInfo, setDeviceInfo] = useState<{ deviceId: string; label: string; pubkeyHex: string; npub: string } | null>(null);
 
@@ -1060,6 +1068,70 @@ function DevicesView({
     }
   }
 
+  async function handleCreateInvite() {
+    setPairingError(null);
+    const response = await browser.runtime.sendMessage({ type: "CREATE_INVITE_CODE" }) as { code?: string; error?: string };
+    if (response.error) {
+      setPairingError(response.error);
+    } else if (response.code) {
+      setPairingCode(response.code);
+    }
+  }
+
+  async function handleCreateJoinRequest() {
+    setPairingError(null);
+    const response = await browser.runtime.sendMessage({ type: "CREATE_JOIN_REQUEST_CODE" }) as { code?: string; error?: string };
+    if (response.error) {
+      setPairingError(response.error);
+    } else if (response.code) {
+      setPairingCode(response.code);
+    }
+  }
+
+  async function handleImportCode() {
+    setPairingError(null);
+    const trimmed = pasteCode.trim();
+    if (!trimmed.startsWith("zvault:")) {
+      setPairingError("Code must start with 'zvault:'");
+      return;
+    }
+    const response = await browser.runtime.sendMessage({ type: "IMPORT_PAIRING_CODE", payload: { code: trimmed } }) as { payload?: { t: string; p: string; l: string; vid?: string }; error?: string };
+    if (response.error) {
+      setPairingError(response.error);
+    } else if (response.payload) {
+      setPairingInfo(response.payload);
+    }
+  }
+
+  async function handleConfirmPairing() {
+    if (!pairingInfo) return;
+    setPairingError(null);
+    const response = await browser.runtime.sendMessage({
+      type: "CONFIRM_PAIRING",
+      payload: { pubkeyHex: pairingInfo.p, label: pairingInfo.l, pairingType: pairingInfo.t },
+    }) as { success?: boolean; responseCode?: string; error?: string };
+    if (response.error) {
+      setPairingError(response.error);
+    } else {
+      if (response.responseCode) {
+        setPairingResponse(response.responseCode);
+      } else {
+        showToast("Device paired!");
+        closePairingDialog();
+        await loadDevices();
+      }
+    }
+  }
+
+  function closePairingDialog() {
+    setShowPairing(null);
+    setPairingCode(null);
+    setPasteCode("");
+    setPairingInfo(null);
+    setPairingResponse(null);
+    setPairingError(null);
+  }
+
   const inputStyle: React.CSSProperties = {
     width: "100%",
     padding: "0.5rem",
@@ -1081,13 +1153,104 @@ function DevicesView({
         <h2 style={{ fontSize: "1rem", fontWeight: 600 }}>📱 Devices</h2>
       </div>
 
-      {/* Admit button */}
-      {!showAdmit && (
+      {/* Pairing buttons */}
+      {!showPairing && !showAdmit && (
+        <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem" }}>
+          <button
+            onClick={() => { setShowPairing("invite"); handleCreateInvite(); }}
+            style={{ flex: 1, padding: "0.5rem", borderRadius: "4px", border: "none", background: "#1a8a4a", color: "#fff", fontSize: "0.8rem", cursor: "pointer" }}
+          >
+            Invite
+          </button>
+          <button
+            onClick={() => { setShowPairing("request"); handleCreateJoinRequest(); }}
+            style={{ flex: 1, padding: "0.5rem", borderRadius: "4px", border: "none", background: "#6b21a8", color: "#fff", fontSize: "0.8rem", cursor: "pointer" }}
+          >
+            Join Request
+          </button>
+          <button
+            onClick={() => setShowPairing("paste")}
+            style={{ flex: 1, padding: "0.5rem", borderRadius: "4px", border: "none", background: "#1d4ed8", color: "#fff", fontSize: "0.8rem", cursor: "pointer" }}
+          >
+            Paste Code
+          </button>
+        </div>
+      )}
+
+      {/* Pairing dialog */}
+      {showPairing && (
+        <div style={{ marginBottom: "1rem", padding: "0.75rem", background: "#0d1b2a", borderRadius: "4px", border: "1px solid #2a2a4a" }}>
+          {showPairing === "invite" && pairingCode && !pairingResponse && (
+            <>
+              <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.5rem" }}>Invite Code</div>
+              <p style={{ fontSize: "0.75rem", color: "#aaa", marginBottom: "0.5rem" }}>Share this code with the device you want to invite:</p>
+              <div style={{ background: "#16213e", padding: "0.5rem", borderRadius: "4px", fontSize: "0.7rem", wordBreak: "break-all", userSelect: "all" }}>{pairingCode}</div>
+            </>
+          )}
+          {showPairing === "request" && pairingCode && !pairingResponse && (
+            <>
+              <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.5rem" }}>Join Request Code</div>
+              <p style={{ fontSize: "0.75rem", color: "#aaa", marginBottom: "0.5rem" }}>Share this code with the vault admin:</p>
+              <div style={{ background: "#16213e", padding: "0.5rem", borderRadius: "4px", fontSize: "0.7rem", wordBreak: "break-all", userSelect: "all" }}>{pairingCode}</div>
+            </>
+          )}
+          {showPairing === "paste" && !pairingInfo && !pairingResponse && (
+            <>
+              <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.5rem" }}>Import Pairing Code</div>
+              <input
+                value={pasteCode}
+                onChange={(e) => setPasteCode(e.target.value)}
+                placeholder="zvault:..."
+                style={{ width: "100%", padding: "0.5rem", borderRadius: "4px", border: "1px solid #444", background: "#16213e", color: "#e0e0e0", fontSize: "0.75rem", fontFamily: "monospace", marginBottom: "0.5rem" }}
+              />
+              <button
+                onClick={handleImportCode}
+                disabled={!pasteCode.trim()}
+                style={{ width: "100%", padding: "0.5rem", borderRadius: "4px", border: "none", background: "#1d4ed8", color: "#fff", fontSize: "0.8rem", cursor: "pointer" }}
+              >
+                Import
+              </button>
+            </>
+          )}
+          {pairingInfo && !pairingResponse && (
+            <>
+              <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.5rem" }}>Confirm Pairing</div>
+              <p style={{ fontSize: "0.75rem", color: "#aaa", marginBottom: "0.25rem" }}>Device: <strong>{pairingInfo.l}</strong></p>
+              <p style={{ fontSize: "0.7rem", color: "#888", marginBottom: "0.5rem", wordBreak: "break-all", fontFamily: "monospace" }}>{pairingInfo.p}</p>
+              <button
+                onClick={handleConfirmPairing}
+                style={{ width: "100%", padding: "0.5rem", borderRadius: "4px", border: "none", background: "#16a34a", color: "#fff", fontSize: "0.8rem", cursor: "pointer" }}
+              >
+                Confirm & Admit
+              </button>
+            </>
+          )}
+          {pairingResponse && (
+            <>
+              <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.5rem", color: "#4ade80" }}>✓ Device Admitted</div>
+              <p style={{ fontSize: "0.75rem", color: "#aaa", marginBottom: "0.5rem" }}>Send this response code back:</p>
+              <div style={{ background: "#16213e", padding: "0.5rem", borderRadius: "4px", fontSize: "0.7rem", wordBreak: "break-all", userSelect: "all" }}>{pairingResponse}</div>
+            </>
+          )}
+          {pairingError && (
+            <p style={{ fontSize: "0.75rem", color: "#f87171", marginTop: "0.5rem" }}>{pairingError}</p>
+          )}
+          <button
+            onClick={closePairingDialog}
+            style={{ width: "100%", padding: "0.4rem", borderRadius: "4px", border: "1px solid #444", background: "transparent", color: "#aaa", fontSize: "0.8rem", cursor: "pointer", marginTop: "0.5rem" }}
+          >
+            {pairingResponse ? "Done" : "Cancel"}
+          </button>
+        </div>
+      )}
+
+      {/* Admit button (Advanced) */}
+      {!showAdmit && !showPairing && (
         <button
           onClick={() => setShowAdmit(true)}
           style={{ width: "100%", padding: "0.5rem", borderRadius: "4px", border: "none", background: "#0f3460", color: "#e0e0e0", fontSize: "0.85rem", cursor: "pointer", marginBottom: "1rem" }}
         >
-          + Admit Device
+          + Admit Device (Advanced)
         </button>
       )}
 

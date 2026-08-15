@@ -643,6 +643,7 @@ fn reset_relays(state: State<'_, AppState>) -> Result<(), String> {
 
     Ok(())
 }
+
 // ─── Device key display/export commands ──────────────────────────────────────
 
 /// Device public key information.
@@ -799,6 +800,189 @@ fn validate_totp_secret(secret: String) -> Result<(), String> {
     Ok(())
 }
 
+// ─── Pairing commands ────────────────────────────────────────────────────────
+
+/// Result of creating an invite or join-request code.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PairingCodeResult {
+    code: String,
+}
+
+/// Info returned from decoding/importing a pairing code.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PairingInfo {
+    pairing_type: String,
+    pubkey_hex: String,
+    label: String,
+    vault_id: Option<String>,
+    timestamp: i64,
+}
+
+/// Create an invite code for this vault.
+#[tauri::command]
+fn create_invite_code(state: State<'_, AppState>) -> Result<PairingCodeResult, String> {
+    let session = state.session.lock().map_err(|e| e.to_string())?;
+    let session = session.as_ref().ok_or("Vault is locked")?;
+
+    // Get the first active device as "this device".
+    let device = session
+        .vault
+        .devices
+        .iter()
+        .find(|d| !d.revoked)
+        .ok_or("No active device identity found")?;
+
+    let payload = zvault_core::pairing::create_invite(
+        &device.nostr_pubkey,
+        &device.label,
+        session.vault.vault_id,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let code = zvault_core::pairing::encode_pairing_code(&payload).map_err(|e| e.to_string())?;
+    Ok(PairingCodeResult { code })
+}
+
+/// Create a join-request code for this device.
+#[tauri::command]
+fn create_join_request_code(state: State<'_, AppState>) -> Result<PairingCodeResult, String> {
+    let session = state.session.lock().map_err(|e| e.to_string())?;
+    let session = session.as_ref().ok_or("Vault is locked")?;
+
+    let device = session
+        .vault
+        .devices
+        .iter()
+        .find(|d| !d.revoked)
+        .ok_or("No active device identity found")?;
+
+    let payload =
+        zvault_core::pairing::create_join_request(&device.nostr_pubkey, &device.label)
+            .map_err(|e| e.to_string())?;
+
+    let code = zvault_core::pairing::encode_pairing_code(&payload).map_err(|e| e.to_string())?;
+    Ok(PairingCodeResult { code })
+}
+
+/// Import (decode) a pairing code and return the parsed info.
+#[tauri::command]
+fn import_pairing_code(code: String) -> Result<PairingInfo, String> {
+    let payload = zvault_core::pairing::decode_pairing_code(&code).map_err(|e| e.to_string())?;
+
+    let pairing_type = match payload.t {
+        zvault_core::pairing::PairingType::Invite => "invite",
+        zvault_core::pairing::PairingType::JoinRequest => "join_request",
+        zvault_core::pairing::PairingType::InviteResponse => "invite_response",
+        zvault_core::pairing::PairingType::JoinResponse => "join_response",
+    };
+
+    Ok(PairingInfo {
+        pairing_type: pairing_type.to_string(),
+        pubkey_hex: payload.p,
+        label: payload.l,
+        vault_id: payload.vid.map(|v| v.to_string()),
+        timestamp: payload.ts,
+    })
+}
+
+/// Confirm a pairing: admit the remote device and optionally generate a response code.
+#[tauri::command]
+fn confirm_pairing(
+    pubkey_hex: String,
+    label: String,
+    pairing_type: String,
+    state: State<'_, AppState>,
+) -> Result<Option<PairingCodeResult>, String> {
+    // Validate pubkey_hex: must be exactly 64 hex characters.
+    if pubkey_hex.len() != 64 || !pubkey_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("Invalid public key: must be 64 hex characters".into());
+    }
+    // Validate label: must be non-empty.
+    if label.trim().is_empty() {
+        return Err("Device label is required".into());
+    }
+
+    let mut session = state.session.lock().map_err(|e| e.to_string())?;
+    let session = session.as_mut().ok_or("Vault is locked")?;
+
+    // Check for duplicate or revoked device with the same pubkey.
+    let normalized_pubkey = pubkey_hex.to_lowercase();
+    for existing in &session.vault.devices {
+        if existing.nostr_pubkey == normalized_pubkey {
+            if existing.revoked {
+                return Err(
+                    "Device with this public key was previously revoked and cannot be re-admitted"
+                        .into(),
+                );
+            } else {
+                return Err("Device with this public key is already admitted".into());
+            }
+        }
+    }
+
+    // Admit the remote device.
+    let device_id = Uuid::new_v4();
+    let added_by = session
+        .vault
+        .devices
+        .first()
+        .map(|d| d.device_id)
+        .unwrap_or(device_id);
+
+    let entry = zvault_core::vault::DeviceEntry {
+        device_id,
+        nostr_pubkey: normalized_pubkey,
+        label: label.trim().to_string(),
+        added_at: chrono::Utc::now(),
+        added_by,
+        revoked: false,
+        revoked_at: None,
+        revoked_by: None,
+    };
+    session.vault.devices.push(entry);
+    session.vault.version += 1;
+    session.vault.updated_at = chrono::Utc::now();
+    session
+        .vault_file
+        .save(&session.key, &session.vault)
+        .map_err(|e| e.to_string())?;
+
+    // Generate a response code if this is an invite or join-request.
+    let response = match pairing_type.as_str() {
+        "invite" | "join_request" => {
+            let my_device = session
+                .vault
+                .devices
+                .iter()
+                .find(|d| !d.revoked && d.device_id != device_id)
+                .ok_or("No local device identity found for response")?;
+
+            let response_payload = match pairing_type.as_str() {
+                "invite" => zvault_core::pairing::create_invite_response(
+                    &my_device.nostr_pubkey,
+                    &my_device.label,
+                )
+                .map_err(|e| e.to_string())?,
+                "join_request" => zvault_core::pairing::create_join_response(
+                    &my_device.nostr_pubkey,
+                    &my_device.label,
+                    session.vault.vault_id,
+                )
+                .map_err(|e| e.to_string())?,
+                _ => unreachable!(),
+            };
+            let code = zvault_core::pairing::encode_pairing_code(&response_payload)
+                .map_err(|e| e.to_string())?;
+            Some(PairingCodeResult { code })
+        }
+        _ => None,
+    };
+
+    Ok(response)
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -830,6 +1014,10 @@ fn main() {
             validate_totp_secret,
             get_device_pubkey,
             export_device_secret_key,
+            create_invite_code,
+            create_join_request_code,
+            import_pairing_code,
+            confirm_pairing,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
