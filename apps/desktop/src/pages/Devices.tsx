@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import DevicePubkeyCard from "../components/DevicePubkeyCard";
+import ExportSecretKeyDialog from "../components/ExportSecretKeyDialog";
 
 interface DeviceSummary {
   device_id: string;
@@ -11,13 +13,15 @@ interface DeviceSummary {
 
 interface Props {
   onBack: () => void;
+  vaultPath?: string;
 }
 
-function Devices({ onBack }: Props) {
+function Devices({ onBack, vaultPath }: Props) {
   const [devices, setDevices] = useState<DeviceSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showAdmit, setShowAdmit] = useState(false);
   const [revokeConfirm, setRevokeConfirm] = useState<DeviceSummary | null>(null);
+  const [showExportKey, setShowExportKey] = useState(false);
 
   // Admit form
   const [admitPubkey, setAdmitPubkey] = useState("");
@@ -127,6 +131,9 @@ function Devices({ onBack }: Props) {
             To sync vaults between devices, both devices must admit each other. Share your public key with the other device, and enter their public key using "Admit Device".
           </p>
         </div>
+
+        {/* This device's public key card */}
+        <DevicePubkeyCard onExportKey={() => setShowExportKey(true)} />
 
         {/* Device list */}
         {devices.length === 0 ? (
@@ -274,6 +281,13 @@ function Devices({ onBack }: Props) {
           </div>
         </div>
       )}
+
+      {/* Export Secret Key Dialog */}
+      <ExportSecretKeyDialog
+        vaultPath={vaultPath || ""}
+        open={showExportKey}
+        onClose={() => setShowExportKey(false)}
+      />
     </div>
   );
 }

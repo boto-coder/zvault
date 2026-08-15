@@ -167,6 +167,22 @@ pub fn generate_totp(secret: &str) -> Result<String, JsValue> {
     Ok(totp.generate(time))
 }
 
+/// Encode a hex public key as a NIP-19 npub bech32 string.
+///
+/// The input must be a 64-character hex string (32 bytes).
+#[wasm_bindgen]
+pub fn encode_npub_from_hex(pubkey_hex: &str) -> Result<String, JsValue> {
+    if pubkey_hex.len() != 64 {
+        return Err(JsValue::from_str("public key must be 64 hex characters"));
+    }
+    let bytes =
+        hex::decode(pubkey_hex).map_err(|e| JsValue::from_str(&format!("invalid hex: {e}")))?;
+    let array: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| JsValue::from_str("public key must be exactly 32 bytes"))?;
+    Ok(zvault_core::nip19::encode_npub(&array))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

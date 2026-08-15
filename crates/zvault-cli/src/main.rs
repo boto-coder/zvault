@@ -200,6 +200,20 @@ enum DeviceAction {
         #[arg(long)]
         label: String,
     },
+
+    /// Show this device's public identity (device ID, label, pubkey, npub).
+    Show {
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+    },
+
+    /// Export this device's secret key (nsec + hex). USE WITH CAUTION.
+    ExportKey {
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+    },
 }
 
 /// Sync subcommands.
@@ -1262,6 +1276,61 @@ fn load_device_identity(
     Ok(device_file)
 }
 
+fn cmd_device_show(vault_path: PathBuf) -> Result<()> {
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (_vf, key, _vault) = result?;
+
+    let device = load_device_identity(&vault_path, &key)?;
+
+    // Compute npub from the public key
+    let pubkey_bytes =
+        hex::decode(&device.pubkey_hex).context("invalid public key hex in device sidecar")?;
+    let pubkey_array: [u8; 32] = pubkey_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("public key is not 32 bytes"))?;
+    let npub = zvault_core::nip19::encode_npub(&pubkey_array);
+
+    println!("Device Identity");
+    println!("───────────────");
+    println!("  Device ID:  {}", device.device_id);
+    println!("  Label:      {}", device.label);
+    println!("  Public key: {}", device.pubkey_hex);
+    println!("  npub:       {npub}");
+
+    Ok(())
+}
+
+fn cmd_device_export_key(vault_path: PathBuf) -> Result<()> {
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (_vf, key, _vault) = result?;
+
+    let device = load_device_identity(&vault_path, &key)?;
+
+    // Decode the secret key hex
+    let sk_bytes =
+        hex::decode(&device.secret_key_hex).context("invalid secret key hex in device sidecar")?;
+    let sk_array: [u8; 32] = sk_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("secret key is not 32 bytes"))?;
+    let nsec = zvault_core::nip19::encode_nsec(&sk_array);
+
+    eprintln!("⚠️  WARNING: This displays your device secret key.");
+    eprintln!("⚠️  Anyone with this key can impersonate your device.");
+    eprintln!("⚠️  Never share this key. Store it securely if backing up.");
+    eprintln!();
+
+    println!("Device Secret Key");
+    println!("─────────────────");
+    println!("  nsec: {}", *nsec);
+    println!("  hex:  {}", device.secret_key_hex);
+
+    Ok(())
+}
+
 // ─── Sync Commands ───────────────────────────────────────────────────────────
 
 fn cmd_sync_send(vault_path: PathBuf, relay_url: String, recipient_pubkey: String) -> Result<()> {
@@ -1536,6 +1605,8 @@ fn main() -> Result<()> {
             } => cmd_device_admit(vault, label, pubkey),
             DeviceAction::Revoke { vault, id } => cmd_device_revoke(vault, id),
             DeviceAction::Init { vault, label } => cmd_device_init(vault, label),
+            DeviceAction::Show { vault } => cmd_device_show(vault),
+            DeviceAction::ExportKey { vault } => cmd_device_export_key(vault),
         },
         Commands::Sync { action } => match action {
             SyncAction::Send {
