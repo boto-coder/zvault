@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import TotpDisplay from "../components/TotpDisplay";
 
 interface ItemDetailData {
   id: string;
@@ -35,6 +36,8 @@ function ItemDetail({ itemId, onBack }: Props) {
   const [editName, setEditName] = useState("");
   const [editUsername, setEditUsername] = useState("");
   const [editPassword, setEditPassword] = useState("");
+  const [editTotpSecret, setEditTotpSecret] = useState("");
+  const [totpError, setTotpError] = useState<string | null>(null);
   const [editNote, setEditNote] = useState("");
   const [editCardNumber, setEditCardNumber] = useState("");
   const [editExpiry, setEditExpiry] = useState("");
@@ -49,6 +52,7 @@ function ItemDetail({ itemId, onBack }: Props) {
       setEditName(result.name);
       setEditUsername(result.username || "");
       setEditPassword(result.password || "");
+      setEditTotpSecret(result.totpSecret || "");
       setEditNote(result.note || "");
       setEditCardNumber(result.cardNumber || "");
       setEditExpiry(result.expiry || "");
@@ -66,12 +70,26 @@ function ItemDetail({ itemId, onBack }: Props) {
   const handleSave = async () => {
     if (!item) return;
     try {
+      // Validate TOTP secret if provided
+      if (editTotpSecret.trim()) {
+        try {
+          await invoke("validate_totp_secret", { secret: editTotpSecret.trim() });
+          setTotpError(null);
+        } catch (err) {
+          setTotpError("Invalid TOTP secret (must be base32-encoded)");
+          return;
+        }
+      } else {
+        setTotpError(null);
+      }
+
       const itemJson = JSON.stringify({
         id: item.id,
         kind: item.kind,
         name: editName,
         username: editUsername || null,
         password: editPassword || null,
+        totpSecret: editTotpSecret.trim() || null,
         note: editNote || null,
         cardNumber: editCardNumber || null,
         expiry: editExpiry || null,
@@ -199,6 +217,31 @@ function ItemDetail({ itemId, onBack }: Props) {
                   showSecret={showPassword}
                   onToggleSecret={() => setShowPassword(!showPassword)}
                 />
+                {editing && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">
+                      TOTP Secret
+                    </label>
+                    <input
+                      type="text"
+                      value={editTotpSecret}
+                      onChange={(e) => {
+                        setEditTotpSecret(e.target.value);
+                        if (totpError) setTotpError(null);
+                      }}
+                      placeholder="Base32 TOTP secret (optional)"
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-zvault-500"
+                    />
+                    {totpError && (
+                      <p
+                        className="mt-1 text-sm text-red-600 dark:text-red-400"
+                        role="alert"
+                      >
+                        {totpError}
+                      </p>
+                    )}
+                  </div>
+                )}
                 {item.uris.length > 0 && !editing && (
                   <div>
                     <label className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">
@@ -216,6 +259,10 @@ function ItemDetail({ itemId, onBack }: Props) {
                       ))}
                     </ul>
                   </div>
+                )}
+                {/* TOTP display — shown in view mode when item has a TOTP secret */}
+                {!editing && item.totpSecret && (
+                  <TotpDisplay secret={item.totpSecret} />
                 )}
               </>
             )}

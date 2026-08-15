@@ -80,6 +80,9 @@ enum Commands {
         /// Show password in cleartext.
         #[arg(long)]
         show_password: bool,
+        /// Show current TOTP code (if configured).
+        #[arg(long)]
+        totp: bool,
     },
 
     /// Add a new item to the vault (interactive).
@@ -469,7 +472,7 @@ fn cmd_list(vault_path: PathBuf, _show_password: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_get(vault_path: PathBuf, id_str: String, show_password: bool) -> Result<()> {
+fn cmd_get(vault_path: PathBuf, id_str: String, show_password: bool, totp: bool) -> Result<()> {
     let id = Uuid::parse_str(&id_str).context("invalid UUID format")?;
     let mut password = get_password("Enter master password: ")?;
     let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
@@ -478,7 +481,31 @@ fn cmd_get(vault_path: PathBuf, id_str: String, show_password: bool) -> Result<(
 
     match vault.get_item(id) {
         Some(item) => {
-            display_item(item, show_password);
+            if totp {
+                // --totp mode: show only the TOTP code, not the raw secret
+                if let Some(secret) = &item.totp_secret {
+                    let totp_gen = totp_rs::TOTP::new(
+                        totp_rs::Algorithm::SHA1,
+                        6,
+                        1,
+                        30,
+                        secret.as_bytes().to_vec(),
+                    )
+                    .map_err(|e| anyhow::anyhow!("invalid TOTP secret: {e}"))?;
+
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)?
+                        .as_secs();
+                    let code = totp_gen.generate(now);
+                    let remaining = 30 - (now % 30);
+
+                    println!("  TOTP:     {} (expires in {}s)", code, remaining);
+                } else {
+                    println!("  No TOTP configured for this item.");
+                }
+            } else {
+                display_item(item, show_password);
+            }
         }
         None => {
             bail!("item not found: {id}");
@@ -1484,7 +1511,8 @@ fn main() -> Result<()> {
             vault,
             id,
             show_password,
-        } => cmd_get(vault, id, show_password),
+            totp,
+        } => cmd_get(vault, id, show_password, totp),
         Commands::Add { vault } => cmd_add(vault),
         Commands::Edit { vault, id } => cmd_edit(vault, id),
         Commands::Delete { vault, id, yes } => cmd_delete(vault, id, yes),

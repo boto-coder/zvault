@@ -22,5 +22,6 @@ serde_json   = { workspace = true }
 uuid         = { workspace = true }
 chrono       = { workspace = true }
 zeroize      = { workspace = true }
+totp-rs      = { workspace = true }
 tokio        = { workspace = true }
 hex          = { workspace = true }
