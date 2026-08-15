@@ -254,7 +254,12 @@ fn list_items(state: State<'_, AppState>) -> Result<Vec<ItemSummary>, String> {
     let session = state.session.lock().map_err(|e| e.to_string())?;
     let session = session.as_ref().ok_or("Vault is locked")?;
 
-    Ok(session.vault.list_items().iter().map(ItemSummary::from).collect())
+    Ok(session
+        .vault
+        .list_items()
+        .iter()
+        .map(ItemSummary::from)
+        .collect())
 }
 
 /// Get full item detail by ID.
@@ -365,10 +370,7 @@ fn delete_item(id: String, state: State<'_, AppState>) -> Result<(), String> {
     let mut session = state.session.lock().map_err(|e| e.to_string())?;
     let session = session.as_mut().ok_or("Vault is locked")?;
 
-    session
-        .vault
-        .delete_item(uuid)
-        .map_err(|e| e.to_string())?;
+    session.vault.delete_item(uuid).map_err(|e| e.to_string())?;
     session
         .vault_file
         .save(&session.key, &session.vault)
@@ -395,6 +397,126 @@ fn list_devices(state: State<'_, AppState>) -> Result<Vec<DeviceSummary>, String
             revoked: d.revoked,
         })
         .collect())
+}
+
+/// Generate a random password with all 4 character classes.
+#[tauri::command]
+fn generate_password(length: Option<u32>) -> Result<String, String> {
+    let len = length.unwrap_or(20) as usize;
+    if len < 4 {
+        return Err("Minimum password length is 4".into());
+    }
+
+    use aes_gcm::aead::rand_core::RngCore as _;
+    use aes_gcm::aead::OsRng as AeadOsRng;
+
+    const UPPER: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const LOWER: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
+    const DIGITS: &[u8] = b"0123456789";
+    const SPECIAL: &[u8] = b"!@#$%^&*()_+-=[]{}|;:,.<>?";
+    const ALL: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+-=[]{}|;:,.<>?";
+
+    let mut password = Vec::with_capacity(len);
+    let mut random_bytes = vec![0u8; len + 4];
+    AeadOsRng.fill_bytes(&mut random_bytes);
+
+    // Guarantee one from each class
+    password.push(UPPER[(random_bytes[0] as usize) % UPPER.len()]);
+    password.push(LOWER[(random_bytes[1] as usize) % LOWER.len()]);
+    password.push(DIGITS[(random_bytes[2] as usize) % DIGITS.len()]);
+    password.push(SPECIAL[(random_bytes[3] as usize) % SPECIAL.len()]);
+
+    // Fill remaining
+    for i in 4..len {
+        password.push(ALL[(random_bytes[i] as usize) % ALL.len()]);
+    }
+
+    // Fisher-Yates shuffle
+    let mut shuffle_bytes = vec![0u8; len];
+    AeadOsRng.fill_bytes(&mut shuffle_bytes);
+    for i in (1..len).rev() {
+        let j = (shuffle_bytes[i] as usize) % (i + 1);
+        password.swap(i, j);
+    }
+
+    Ok(String::from_utf8(password).expect("invariant: all chars are ASCII"))
+}
+
+/// Admit a new device to the vault's trust group.
+#[tauri::command]
+fn admit_device(
+    pubkey_hex: String,
+    label: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    if pubkey_hex.len() != 64 || !pubkey_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("Invalid public key: must be 64 hex characters".into());
+    }
+    if label.trim().is_empty() {
+        return Err("Device label is required".into());
+    }
+
+    let mut session = state.session.lock().map_err(|e| e.to_string())?;
+    let session = session.as_mut().ok_or("Vault is locked")?;
+
+    let device_id = Uuid::new_v4();
+    let added_by = session
+        .vault
+        .devices
+        .first()
+        .map(|d| d.device_id)
+        .unwrap_or(device_id);
+
+    let entry = zvault_core::vault::DeviceEntry {
+        device_id,
+        nostr_pubkey: pubkey_hex.to_lowercase(),
+        label: label.trim().to_string(),
+        added_at: chrono::Utc::now(),
+        added_by,
+        revoked: false,
+        revoked_at: None,
+        revoked_by: None,
+    };
+    session.vault.devices.push(entry);
+    session.vault.version += 1;
+    session.vault.updated_at = chrono::Utc::now();
+    session
+        .vault_file
+        .save(&session.key, &session.vault)
+        .map_err(|e| e.to_string())?;
+
+    Ok(device_id.to_string())
+}
+
+/// Revoke a device from the vault's trust group.
+#[tauri::command]
+fn revoke_device(device_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let uuid = Uuid::parse_str(&device_id).map_err(|e| e.to_string())?;
+
+    let mut session = state.session.lock().map_err(|e| e.to_string())?;
+    let session = session.as_mut().ok_or("Vault is locked")?;
+
+    let entry = session
+        .vault
+        .devices
+        .iter_mut()
+        .find(|d| d.device_id == uuid)
+        .ok_or("Device not found")?;
+
+    if entry.revoked {
+        return Err("Device already revoked".into());
+    }
+    entry.revoked = true;
+    entry.revoked_at = Some(chrono::Utc::now());
+    session.vault.version += 1;
+    session.vault.updated_at = chrono::Utc::now();
+    session
+        .vault_file
+        .save(&session.key, &session.vault)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 /// Change the vault master password.
@@ -442,6 +564,9 @@ fn main() {
             update_item,
             delete_item,
             list_devices,
+            generate_password,
+            admit_device,
+            revoke_device,
             rekey_vault,
         ])
         .run(tauri::generate_context!())
