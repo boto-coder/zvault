@@ -10,7 +10,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 use zvault_core::vault::{ItemKind, VaultFile, VaultItem};
 
 // ─── CLI definition ──────────────────────────────────────────────────────────
@@ -1157,6 +1157,12 @@ struct CliDeviceFile {
     label: String,
 }
 
+impl Drop for CliDeviceFile {
+    fn drop(&mut self) {
+        self.secret_key_hex.zeroize();
+    }
+}
+
 fn device_sidecar_path(vault_path: &std::path::Path) -> PathBuf {
     let mut p = vault_path.as_os_str().to_os_string();
     p.push(".device");
@@ -1191,17 +1197,18 @@ fn cmd_device_init(vault_path: PathBuf, label: String) -> Result<()> {
     let sk_bytes = identity
         .load_secret_key(&storage)
         .map_err(|e| anyhow::anyhow!("failed to load secret key: {e}"))?;
-    let sk_hex = hex::encode(sk_bytes.as_slice());
+    let sk_hex = Zeroizing::new(hex::encode(sk_bytes.as_slice()));
 
     // Build the sidecar file content.
     let device_file = CliDeviceFile {
         device_id: material.device_id,
-        secret_key_hex: sk_hex,
+        secret_key_hex: (*sk_hex).clone(),
         pubkey_hex: material.pubkey_hex.clone(),
         label: label.clone(),
     };
-    let device_json =
-        serde_json::to_vec(&device_file).context("failed to serialise device file")?;
+    let device_json = Zeroizing::new(
+        serde_json::to_vec(&device_file).context("failed to serialise device file")?,
+    );
 
     // Encrypt the sidecar with the vault password.
     let (_, sidecar_key) = zvault_core::vault::VaultFile::create(&password, &sidecar)
@@ -1268,8 +1275,10 @@ fn load_device_identity(
     }
 
     let blob = std::fs::read(&sidecar).context("failed to read device sidecar file")?;
-    let plaintext = zvault_core::crypto::decrypt(vault_key, &blob)
-        .map_err(|e| anyhow::anyhow!("failed to decrypt device sidecar (wrong password?): {e}"))?;
+    let plaintext: Zeroizing<Vec<u8>> =
+        Zeroizing::new(zvault_core::crypto::decrypt(vault_key, &blob).map_err(|e| {
+            anyhow::anyhow!("failed to decrypt device sidecar (wrong password?): {e}")
+        })?);
 
     let device_file: CliDeviceFile =
         serde_json::from_slice(&plaintext).context("failed to parse device sidecar JSON")?;
@@ -1342,8 +1351,9 @@ fn cmd_sync_send(vault_path: PathBuf, relay_url: String, recipient_pubkey: Strin
 
     // Load device identity.
     let device = load_device_identity(&vault_path, &key)?;
-    let sk_bytes =
-        hex::decode(&device.secret_key_hex).context("invalid secret key hex in device sidecar")?;
+    let sk_bytes = Zeroizing::new(
+        hex::decode(&device.secret_key_hex).context("invalid secret key hex in device sidecar")?,
+    );
 
     // Build the sync message.
     let mut clock = zvault_core::sync::LamportClock::new();
@@ -1360,9 +1370,8 @@ fn cmd_sync_send(vault_path: PathBuf, relay_url: String, recipient_pubkey: Strin
     let sync_json = serde_json::to_string(&sync_msg).context("failed to serialise sync message")?;
 
     // Gift-wrap the sync message.
-    let sk_vec = zeroize::Zeroizing::new(sk_bytes.clone());
     let gift_wrapped = zvault_core::nostr::gift_wrap(
-        &sk_vec,
+        &sk_bytes,
         &recipient_pubkey,
         &sync_json,
         21059, // custom kind for zvault sync (inside the gift wrap — relay sees 1059)
@@ -1398,9 +1407,9 @@ fn cmd_sync_receive(vault_path: PathBuf, relay_url: String, timeout_secs: u64) -
 
     // Load device identity.
     let device = load_device_identity(&vault_path, &key)?;
-    let sk_bytes =
-        hex::decode(&device.secret_key_hex).context("invalid secret key hex in device sidecar")?;
-    let sk_vec = zeroize::Zeroizing::new(sk_bytes.clone());
+    let sk_bytes = Zeroizing::new(
+        hex::decode(&device.secret_key_hex).context("invalid secret key hex in device sidecar")?,
+    );
 
     let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
     let messages_applied = rt.block_on(async {
@@ -1427,7 +1436,7 @@ fn cmd_sync_receive(vault_path: PathBuf, relay_url: String, timeout_secs: u64) -
             match tokio::time::timeout(timeout, rx.recv()).await {
                 Ok(Some(event)) => {
                     // Try to unwrap the gift-wrap.
-                    match zvault_core::nostr::unwrap_gift_wrap(&sk_vec, &event) {
+                    match zvault_core::nostr::unwrap_gift_wrap(&sk_bytes, &event) {
                         Ok(rumor) => {
                             // Parse the inner content as a SyncMessage.
                             match serde_json::from_str::<zvault_core::sync::SyncMessage>(

@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use zvault_core::crypto::VaultKey;
 use zvault_core::vault::{ItemKind, Vault, VaultFile, VaultItem};
@@ -586,8 +586,8 @@ fn get_device_pubkey(state: State<'_, AppState>) -> Result<DevicePubkeyInfo, Str
         .ok_or("No active device identity found")?;
 
     // Encode the pubkey as npub
-    let pubkey_bytes = hex::decode(&device.nostr_pubkey)
-        .map_err(|e| format!("Invalid pubkey hex: {e}"))?;
+    let pubkey_bytes =
+        hex::decode(&device.nostr_pubkey).map_err(|e| format!("Invalid pubkey hex: {e}"))?;
     let pubkey_array: [u8; 32] = pubkey_bytes
         .try_into()
         .map_err(|_| "Public key is not 32 bytes".to_string())?;
@@ -630,9 +630,12 @@ fn export_device_secret_key(
         return Err("Device identity not initialised. No .device sidecar file found.".into());
     }
 
-    let blob = std::fs::read(&sidecar_path).map_err(|e| format!("Failed to read device sidecar: {e}"))?;
-    let plaintext = zvault_core::crypto::decrypt(&key, &blob)
-        .map_err(|e| format!("Failed to decrypt device sidecar: {e}"))?;
+    let blob =
+        std::fs::read(&sidecar_path).map_err(|e| format!("Failed to read device sidecar: {e}"))?;
+    let plaintext: Zeroizing<Vec<u8>> = Zeroizing::new(
+        zvault_core::crypto::decrypt(&key, &blob)
+            .map_err(|e| format!("Failed to decrypt device sidecar: {e}"))?,
+    );
 
     #[derive(serde::Deserialize)]
     struct DeviceFile {
