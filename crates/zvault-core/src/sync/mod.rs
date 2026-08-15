@@ -178,15 +178,33 @@ pub fn apply_sync_message(
     clock.update(msg.clock);
 
     // Validate vault ID.
+    // On first sync (receiver's vault has no items and this is a Full sync),
+    // adopt the sender's vault_id to bootstrap the shared identity.
     if msg.vault_id != vault.id {
-        return Err(crate::Error::SyncError(format!(
-            "vault ID mismatch: expected {}, got {}",
-            vault.id, msg.vault_id
-        )));
+        if vault.items.is_empty() && matches!(msg.op, SyncOp::Full) {
+            vault.id = msg.vault_id;
+        } else {
+            return Err(crate::Error::SyncError(format!(
+                "vault ID mismatch: expected {}, got {}",
+                vault.id, msg.vault_id
+            )));
+        }
     }
 
     // Validate sender is a live device and verify pubkey matches.
-    let sender_entry = vault.devices.iter().find(|d| d.device_id == msg.sender);
+    // Try matching by device_id first; if not found, fall back to matching by
+    // pubkey (handles cross-device pairing where B knows A's pubkey but under
+    // a different device_id than A's self-assigned one).
+    let sender_entry = vault
+        .devices
+        .iter()
+        .find(|d| d.device_id == msg.sender)
+        .or_else(|| {
+            vault
+                .devices
+                .iter()
+                .find(|d| d.nostr_pubkey == sender_pubkey_hex)
+        });
     match sender_entry {
         None => {
             return Err(crate::Error::SyncError(format!(
@@ -602,8 +620,12 @@ mod tests {
         remote_vault.version = 5;
 
         let mut local_vault = Vault::new();
-        // Different vault ID — must be rejected.
+        // Different vault ID — must be rejected (vault has items so it's not a fresh bootstrap).
         local_vault.version = 1;
+        local_vault.add_item(crate::vault::VaultItem::new(
+            crate::vault::ItemKind::SecureNote,
+            "existing-item",
+        ));
 
         let sender_id = Uuid::new_v4();
         local_vault.devices.push(crate::vault::DeviceEntry {

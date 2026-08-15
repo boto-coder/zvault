@@ -18,9 +18,7 @@ use chacha20::ChaCha20;
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use k256::{
-    elliptic_curve::sec1::ToEncodedPoint,
-    schnorr::{signature::Signer, SigningKey as SchnorrSigningKey},
-    SecretKey,
+    elliptic_curve::sec1::ToEncodedPoint, schnorr::SigningKey as SchnorrSigningKey, SecretKey,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -104,6 +102,8 @@ pub fn sign_event(
     tags: Vec<Vec<String>>,
     created_at: i64,
 ) -> Result<NostrEvent> {
+    use k256::schnorr::signature::hazmat::PrehashSigner;
+
     // Parse secret key.
     let sk = SecretKey::from_slice(secret_key)
         .map_err(|e| Error::Crypto(format!("invalid secret key: {e}")))?;
@@ -115,10 +115,14 @@ pub fn sign_event(
     let id = compute_event_id(&pubkey_hex, created_at, kind, &tags, content);
 
     // Sign with BIP-340 Schnorr.
+    // The event ID is already SHA256(canonical_json), so we use sign_prehash
+    // to avoid double-hashing (k256's `sign` applies SHA256 internally).
     let schnorr_key = SchnorrSigningKey::from(sk);
     let id_bytes =
         hex::decode(&id).map_err(|e| Error::Crypto(format!("hex decode event id: {e}")))?;
-    let signature = schnorr_key.sign(&id_bytes);
+    let signature: k256::schnorr::Signature = schnorr_key
+        .sign_prehash(&id_bytes)
+        .map_err(|e| Error::Crypto(format!("schnorr sign failed: {e}")))?;
     let sig_hex = hex::encode(signature.to_bytes());
 
     Ok(NostrEvent {
@@ -138,7 +142,7 @@ pub fn sign_event(
 ///
 /// Returns [`Error::Crypto`] if the signature or public key is invalid.
 pub fn verify_event(event: &NostrEvent) -> Result<()> {
-    use k256::schnorr::{signature::Verifier, VerifyingKey};
+    use k256::schnorr::{signature::hazmat::PrehashVerifier, VerifyingKey};
 
     // Recompute event ID.
     let expected_id = compute_event_id(
@@ -165,9 +169,10 @@ pub fn verify_event(event: &NostrEvent) -> Result<()> {
         .map_err(|e| Error::Crypto(format!("invalid signature: {e}")))?;
 
     // Verify.
+    // Use verify_prehash because the event ID is already SHA256(canonical_json).
     let id_bytes =
         hex::decode(&event.id).map_err(|e| Error::Crypto(format!("bad event id hex: {e}")))?;
-    vk.verify(&id_bytes, &signature)
+    vk.verify_prehash(&id_bytes, &signature)
         .map_err(|e| Error::Crypto(format!("signature verification failed: {e}")))?;
 
     Ok(())

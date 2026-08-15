@@ -511,4 +511,73 @@ mod tests {
 
         client.close().await.ok();
     }
+
+    /// Test that a kind 1059 (gift-wrap) event can be published, then retrieved
+    /// from a separate connection using a #p tag filter.
+    #[tokio::test]
+    #[ignore = "requires network access to a real Nostr relay"]
+    async fn relay_stores_and_retrieves_kind_1059() {
+        use crate::nostr;
+        use aes_gcm::aead::OsRng as AeadOsRng;
+        use zeroize::Zeroizing;
+
+        let relay_url =
+            std::env::var("ZVAULT_TEST_RELAY").unwrap_or_else(|_| "wss://nos.lol".to_string());
+
+        // Generate throwaway keypair for sender
+        let sk_a = k256::ecdsa::SigningKey::random(&mut AeadOsRng);
+        let sk_a_bytes: Zeroizing<Vec<u8>> = Zeroizing::new(sk_a.to_bytes().to_vec());
+
+        // Generate throwaway keypair for recipient (we just need the x-only pubkey)
+        let sk_b = k256::ecdsa::SigningKey::random(&mut AeadOsRng);
+        let b_schnorr = k256::schnorr::SigningKey::from(k256::SecretKey::from(&sk_b));
+        let b_pubkey_hex = hex::encode(b_schnorr.verifying_key().to_bytes());
+
+        // Sign a kind 1059 event with p-tag pointing to B
+        #[allow(clippy::cast_possible_wrap)]
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let tags = vec![vec!["p".to_string(), b_pubkey_hex.clone()]];
+        let event = nostr::sign_event(&sk_a_bytes, "gift-wrap-test", 1059, tags, now).unwrap();
+        let event_id = event.id.clone();
+
+        // Publish on connection 1
+        let mut client1 = RelayClient::connect(&relay_url).await.unwrap();
+        client1
+            .publish(&event)
+            .await
+            .expect("publish kind=1059 failed");
+        client1.close().await.ok();
+        eprintln!("Published kind=1059, id={event_id}");
+
+        // Wait for relay to index the event
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        // Subscribe on a fresh connection 2 with #p filter
+        let mut client2 = RelayClient::connect(&relay_url).await.unwrap();
+        let filter = SubscriptionFilter {
+            kinds: Some(vec![1059]),
+            p_tags: Some(vec![b_pubkey_hex]),
+            since: Some(now - 60),
+            ..Default::default()
+        };
+        let mut rx = client2.subscribe(filter).await.unwrap();
+
+        match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
+            Ok(Some(ev)) => {
+                assert_eq!(ev.id, event_id, "received wrong event");
+                eprintln!("✓ Retrieved kind=1059 event from stored events");
+            }
+            Ok(None) => panic!("Channel closed — relay did not send stored events"),
+            Err(e) => {
+                panic!(
+                    "Timeout ({e}) — relay did not return the stored kind=1059 event via #p filter"
+                )
+            }
+        }
+
+        client2.close().await.ok();
+    }
 }

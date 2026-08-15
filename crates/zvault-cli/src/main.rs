@@ -1812,9 +1812,13 @@ fn cmd_sync_receive(
             .map_err(|e| anyhow::anyhow!("relay connect failed: {e}"))?;
 
         // Subscribe for gift-wrapped events addressed to our pubkey.
+        // Use `since` 3 days ago to account for NIP-59 timestamp randomisation
+        // (gift-wrap timestamps are randomly offset ±2 days).
+        let since = chrono::Utc::now().timestamp() - 259200; // 3 days
         let filter = zvault_core::relay::SubscriptionFilter {
             kinds: Some(vec![1059]),
             p_tags: Some(vec![device.pubkey_hex.clone()]),
+            since: Some(since),
             ..Default::default()
         };
         let mut rx = client
