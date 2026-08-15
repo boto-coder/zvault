@@ -117,6 +117,69 @@ export default defineBackground(() => {
         }
       }
 
+      case "GET_PASSWORD": {
+        if (!sessionVaultJson) return { error: "Vault is locked" };
+        const { id } = message.payload as { id: string };
+        const vault = JSON.parse(sessionVaultJson);
+        const item = vault.items.find((i: { id: string }) => i.id === id);
+        return item ? { password: item.password || null } : { error: "Item not found" };
+      }
+
+      case "GET_ITEM": {
+        if (!sessionVaultJson) return { error: "Vault is locked" };
+        const { id: itemId } = message.payload as { id: string };
+        const vault = JSON.parse(sessionVaultJson);
+        const item = vault.items.find((i: { id: string }) => i.id === itemId);
+        return item ? { item } : { error: "Item not found" };
+      }
+
+      case "LIST_DEVICES": {
+        if (!sessionVaultJson) return { error: "Vault is locked" };
+        const vault = JSON.parse(sessionVaultJson);
+        return { devices: vault.devices || [] };
+      }
+
+      case "ADMIT_DEVICE": {
+        if (!sessionVaultJson || !sessionPassword) return { error: "Vault is locked" };
+        const { pubkeyHex, label } = message.payload as { pubkeyHex: string; label: string };
+        if (!/^[0-9a-f]{64}$/i.test(pubkeyHex)) return { error: "Invalid public key format" };
+        const vault = JSON.parse(sessionVaultJson);
+        const entry = {
+          device_id: crypto.randomUUID(),
+          nostr_pubkey: pubkeyHex.toLowerCase(),
+          label,
+          added_at: new Date().toISOString(),
+          added_by: vault.devices?.[0]?.device_id || "unknown",
+          revoked: false,
+        };
+        vault.devices = vault.devices || [];
+        vault.devices.push(entry);
+        vault.version = (vault.version || 0) + 1;
+        sessionVaultJson = JSON.stringify(vault);
+        const { initWasm: initWasmAdmit } = await import("../lib/wasm");
+        const wasmAdmit = await initWasmAdmit();
+        const encryptedAdmit = wasmAdmit.encrypt_vault(sessionPassword, sessionVaultJson);
+        await browser.storage.local.set({ vault: Array.from(encryptedAdmit) });
+        return { success: true, deviceId: entry.device_id };
+      }
+
+      case "REVOKE_DEVICE": {
+        if (!sessionVaultJson || !sessionPassword) return { error: "Vault is locked" };
+        const { deviceId } = message.payload as { deviceId: string };
+        const vault = JSON.parse(sessionVaultJson);
+        const device = vault.devices?.find((d: { device_id: string }) => d.device_id === deviceId);
+        if (!device) return { error: "Device not found" };
+        device.revoked = true;
+        device.revoked_at = new Date().toISOString();
+        vault.version = (vault.version || 0) + 1;
+        sessionVaultJson = JSON.stringify(vault);
+        const { initWasm: initWasmRevoke } = await import("../lib/wasm");
+        const wasmRevoke = await initWasmRevoke();
+        const encryptedRevoke = wasmRevoke.encrypt_vault(sessionPassword, sessionVaultJson);
+        await browser.storage.local.set({ vault: Array.from(encryptedRevoke) });
+        return { success: true };
+      }
+
       case "GENERATE_TOTP": {
         const { secret } = message.payload as { secret: string };
         const { initWasm } = await import("../lib/wasm");
