@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use zeroize::Zeroize;
 use zvault_core::vault::{ItemKind, VaultFile, VaultItem};
@@ -154,6 +155,12 @@ enum Commands {
         #[command(subcommand)]
         action: DeviceAction,
     },
+
+    /// Vault sync subcommands (send/receive via Nostr relay).
+    Sync {
+        #[command(subcommand)]
+        action: SyncAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -166,6 +173,10 @@ enum DeviceAction {
         /// Label for the new device (e.g. "Alice's MacBook").
         #[arg(long)]
         label: String,
+        /// Public key (hex) of the device to admit. If not provided, a
+        /// placeholder entry is created.
+        #[arg(long)]
+        pubkey: Option<String>,
     },
 
     /// Revoke a device from the vault.
@@ -175,6 +186,45 @@ enum DeviceAction {
         /// Path to the vault file.
         #[arg(long, short, env = "ZVAULT_PATH")]
         vault: PathBuf,
+    },
+
+    /// Initialise a device identity for this CLI instance.
+    Init {
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+        /// Human-readable label for this device.
+        #[arg(long)]
+        label: String,
+    },
+}
+
+/// Sync subcommands.
+#[derive(Subcommand, Debug)]
+enum SyncAction {
+    /// Send the vault state to another device via a Nostr relay.
+    Send {
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+        /// WebSocket URL of the Nostr relay (e.g. ws://127.0.0.1:4736).
+        #[arg(long)]
+        relay: String,
+        /// Recipient device's public key (hex, 64 chars).
+        #[arg(long)]
+        recipient: String,
+    },
+    /// Receive and apply sync messages from a Nostr relay.
+    Receive {
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+        /// WebSocket URL of the Nostr relay.
+        #[arg(long)]
+        relay: String,
+        /// How long to wait for messages (seconds).
+        #[arg(long, default_value = "10")]
+        timeout: u64,
     },
 }
 
@@ -989,7 +1039,7 @@ fn cmd_devices(vault_path: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn cmd_device_admit(vault_path: PathBuf, label: String) -> Result<()> {
+fn cmd_device_admit(vault_path: PathBuf, label: String, pubkey: Option<String>) -> Result<()> {
     let mut password = get_password("Enter master password: ")?;
     let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
     password.zeroize();
@@ -997,12 +1047,12 @@ fn cmd_device_admit(vault_path: PathBuf, label: String) -> Result<()> {
 
     let now = chrono::Utc::now();
     let device_id = Uuid::new_v4();
-    // Generate a placeholder pubkey (in a full implementation this would use
-    // SecureStorage and DeviceIdentity::generate, but the CLI operates without
-    // a secure storage backend — we create the entry directly).
+    // Use the provided pubkey, or generate a placeholder.
+    let nostr_pubkey = pubkey.unwrap_or_else(|| format!("{:0>64x}", device_id.as_u128()));
+
     let entry = zvault_core::vault::DeviceEntry {
         device_id,
-        nostr_pubkey: format!("{:0>64x}", device_id.as_u128()),
+        nostr_pubkey,
         label: label.clone(),
         added_at: now,
         added_by: vault
@@ -1052,6 +1102,294 @@ fn cmd_device_revoke(vault_path: PathBuf, id_str: String) -> Result<()> {
     vf.save(&key, &vault).context("failed to save vault")?;
 
     println!("✓ Device revoked: {label} ({id})");
+    Ok(())
+}
+
+// ─── Device Init ─────────────────────────────────────────────────────────────
+
+/// Sidecar `.device` file content (JSON before encryption).
+#[derive(Serialize, Deserialize)]
+struct CliDeviceFile {
+    device_id: Uuid,
+    secret_key_hex: String,
+    pubkey_hex: String,
+    label: String,
+}
+
+fn device_sidecar_path(vault_path: &std::path::Path) -> PathBuf {
+    let mut p = vault_path.as_os_str().to_os_string();
+    p.push(".device");
+    PathBuf::from(p)
+}
+
+fn cmd_device_init(vault_path: PathBuf, label: String) -> Result<()> {
+    let sidecar = device_sidecar_path(&vault_path);
+    if sidecar.exists() {
+        bail!(
+            "Device identity already initialised. Sidecar file exists: {}",
+            sidecar.display()
+        );
+    }
+
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    let (vf, key, mut vault) = match result {
+        Ok(v) => v,
+        Err(e) => {
+            password.zeroize();
+            return Err(e);
+        }
+    };
+
+    // Generate a keypair using InMemoryStorage.
+    let storage = zvault_core::device::InMemoryStorage::default();
+    let (identity, material) = zvault_core::device::DeviceIdentity::generate(&label, &storage)
+        .map_err(|e| anyhow::anyhow!("keypair generation failed: {e}"))?;
+
+    // Load the secret key from the in-memory storage.
+    let sk_bytes = identity
+        .load_secret_key(&storage)
+        .map_err(|e| anyhow::anyhow!("failed to load secret key: {e}"))?;
+    let sk_hex = hex::encode(sk_bytes.as_slice());
+
+    // Build the sidecar file content.
+    let device_file = CliDeviceFile {
+        device_id: material.device_id,
+        secret_key_hex: sk_hex,
+        pubkey_hex: material.pubkey_hex.clone(),
+        label: label.clone(),
+    };
+    let device_json =
+        serde_json::to_vec(&device_file).context("failed to serialise device file")?;
+
+    // Encrypt the sidecar with the vault password.
+    let (_, sidecar_key) = zvault_core::vault::VaultFile::create(&password, &sidecar)
+        .context("failed to create sidecar file")?;
+
+    // We need to store the device JSON in the sidecar. We use a mini vault
+    // just to use the atomic encrypted write. Instead, let's encrypt directly.
+    // Actually simpler: just encrypt the device JSON using the crypto module.
+    drop(sidecar_key);
+    // Remove the empty vault file we just created and write encrypted blob instead.
+    std::fs::remove_file(&sidecar).ok();
+
+    // Encrypt device data with vault password + fresh KdfParams.
+    let sidecar_blob = zvault_core::crypto::encrypt(&key, &device_json)
+        .map_err(|e| anyhow::anyhow!("encrypt sidecar failed: {e}"))?;
+    std::fs::write(&sidecar, &sidecar_blob).context("failed to write sidecar file")?;
+
+    // Bootstrap or admit the device into the vault device list.
+    if vault.devices.is_empty() {
+        // First device — bootstrap.
+        let mut dm = zvault_core::device::DeviceManager::from_vault(&vault);
+        dm.bootstrap(&material)
+            .map_err(|e| anyhow::anyhow!("bootstrap failed: {e}"))?;
+        dm.flush(&mut vault);
+    } else {
+        // Vault already has devices — add ourselves.
+        let now = chrono::Utc::now();
+        let entry = zvault_core::vault::DeviceEntry {
+            device_id: material.device_id,
+            nostr_pubkey: material.pubkey_hex.clone(),
+            label: label.clone(),
+            added_at: now,
+            added_by: vault
+                .devices
+                .first()
+                .map(|d| d.device_id)
+                .unwrap_or(material.device_id),
+            revoked: false,
+            revoked_at: None,
+            revoked_by: None,
+        };
+        vault.devices.push(entry);
+        vault.version += 1;
+        vault.updated_at = now;
+    }
+
+    vf.save(&key, &vault).context("failed to save vault")?;
+    password.zeroize();
+
+    println!("✓ Device initialised");
+    println!("  Device ID: {}", material.device_id);
+    println!("  Public key: {}", material.pubkey_hex);
+    Ok(())
+}
+
+/// Load the device identity from the encrypted sidecar file.
+fn load_device_identity(
+    vault_path: &std::path::Path,
+    vault_key: &zvault_core::crypto::VaultKey,
+) -> Result<CliDeviceFile> {
+    let sidecar = device_sidecar_path(vault_path);
+    if !sidecar.exists() {
+        bail!("Device identity not initialised. Run `zvault device init` first.");
+    }
+
+    let blob = std::fs::read(&sidecar).context("failed to read device sidecar file")?;
+    let plaintext = zvault_core::crypto::decrypt(vault_key, &blob)
+        .map_err(|e| anyhow::anyhow!("failed to decrypt device sidecar (wrong password?): {e}"))?;
+
+    let device_file: CliDeviceFile =
+        serde_json::from_slice(&plaintext).context("failed to parse device sidecar JSON")?;
+    Ok(device_file)
+}
+
+// ─── Sync Commands ───────────────────────────────────────────────────────────
+
+fn cmd_sync_send(vault_path: PathBuf, relay_url: String, recipient_pubkey: String) -> Result<()> {
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (vf, key, vault) = result?;
+    let _ = vf; // not needed after open
+
+    // Load device identity.
+    let device = load_device_identity(&vault_path, &key)?;
+    let sk_bytes =
+        hex::decode(&device.secret_key_hex).context("invalid secret key hex in device sidecar")?;
+
+    // Build the sync message.
+    let mut clock = zvault_core::sync::LamportClock::new();
+    let sync_msg = zvault_core::sync::build_full_sync_message(
+        &vault,
+        &mut clock,
+        device.device_id,
+        &sk_bytes,
+        &recipient_pubkey,
+    )
+    .map_err(|e| anyhow::anyhow!("build sync message failed: {e}"))?;
+
+    // Serialise the sync message to JSON (this becomes the inner content for gift-wrap).
+    let sync_json = serde_json::to_string(&sync_msg).context("failed to serialise sync message")?;
+
+    // Gift-wrap the sync message.
+    let sk_vec = zeroize::Zeroizing::new(sk_bytes.clone());
+    let gift_wrapped = zvault_core::nostr::gift_wrap(
+        &sk_vec,
+        &recipient_pubkey,
+        &sync_json,
+        21059, // custom kind for zvault sync (inside the gift wrap — relay sees 1059)
+        &[],
+    )
+    .map_err(|e| anyhow::anyhow!("gift wrap failed: {e}"))?;
+
+    // Publish to the relay.
+    let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
+    rt.block_on(async {
+        let mut client = zvault_core::relay::RelayClient::connect(&relay_url)
+            .await
+            .map_err(|e| anyhow::anyhow!("relay connect failed: {e}"))?;
+
+        client
+            .publish(&gift_wrapped)
+            .await
+            .map_err(|e| anyhow::anyhow!("relay publish failed: {e}"))?;
+
+        client.close().await.ok();
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    println!("✓ Sync sent (vault version {})", vault.version);
+    Ok(())
+}
+
+fn cmd_sync_receive(vault_path: PathBuf, relay_url: String, timeout_secs: u64) -> Result<()> {
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (vf, key, mut vault) = result?;
+
+    // Load device identity.
+    let device = load_device_identity(&vault_path, &key)?;
+    let sk_bytes =
+        hex::decode(&device.secret_key_hex).context("invalid secret key hex in device sidecar")?;
+    let sk_vec = zeroize::Zeroizing::new(sk_bytes.clone());
+
+    let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
+    let messages_applied = rt.block_on(async {
+        let mut client = zvault_core::relay::RelayClient::connect(&relay_url)
+            .await
+            .map_err(|e| anyhow::anyhow!("relay connect failed: {e}"))?;
+
+        // Subscribe for gift-wrapped events addressed to our pubkey.
+        let filter = zvault_core::relay::SubscriptionFilter {
+            kinds: Some(vec![1059]),
+            p_tags: Some(vec![device.pubkey_hex.clone()]),
+            ..Default::default()
+        };
+        let mut rx = client
+            .subscribe(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("relay subscribe failed: {e}"))?;
+
+        let mut applied_count = 0u32;
+        let timeout = std::time::Duration::from_secs(timeout_secs);
+
+        // Receive events until timeout.
+        loop {
+            match tokio::time::timeout(timeout, rx.recv()).await {
+                Ok(Some(event)) => {
+                    // Try to unwrap the gift-wrap.
+                    match zvault_core::nostr::unwrap_gift_wrap(&sk_vec, &event) {
+                        Ok(rumor) => {
+                            // Parse the inner content as a SyncMessage.
+                            match serde_json::from_str::<zvault_core::sync::SyncMessage>(
+                                &rumor.content,
+                            ) {
+                                Ok(sync_msg) => {
+                                    // Find the sender's pubkey from the rumor.
+                                    let sender_pubkey = &rumor.pubkey;
+                                    let mut clock = zvault_core::sync::LamportClock::new();
+                                    match zvault_core::sync::apply_sync_message(
+                                        &mut vault,
+                                        &sync_msg,
+                                        &mut clock,
+                                        &sk_bytes,
+                                        sender_pubkey,
+                                    ) {
+                                        Ok(()) => {
+                                            applied_count += 1;
+                                        }
+                                        Err(e) => {
+                                            eprintln!("warning: sync message rejected: {e}");
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("warning: failed to parse sync message: {e}");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("warning: failed to unwrap gift-wrap: {e}");
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Channel closed (relay disconnected).
+                    break;
+                }
+                Err(_) => {
+                    // Timeout — done waiting.
+                    break;
+                }
+            }
+        }
+
+        client.close().await.ok();
+        Ok::<u32, anyhow::Error>(applied_count)
+    })?;
+
+    if messages_applied > 0 {
+        vf.save(&key, &vault).context("failed to save vault")?;
+        println!(
+            "✓ Received {} sync message(s), vault now at version {}",
+            messages_applied, vault.version
+        );
+    } else {
+        println!("No sync messages received.");
+    }
     Ok(())
 }
 
@@ -1163,8 +1501,25 @@ fn main() -> Result<()> {
         } => cmd_import(vault, format, input),
         Commands::Devices { vault } => cmd_devices(vault),
         Commands::Device { action } => match action {
-            DeviceAction::Admit { vault, label } => cmd_device_admit(vault, label),
+            DeviceAction::Admit {
+                vault,
+                label,
+                pubkey,
+            } => cmd_device_admit(vault, label, pubkey),
             DeviceAction::Revoke { vault, id } => cmd_device_revoke(vault, id),
+            DeviceAction::Init { vault, label } => cmd_device_init(vault, label),
+        },
+        Commands::Sync { action } => match action {
+            SyncAction::Send {
+                vault,
+                relay,
+                recipient,
+            } => cmd_sync_send(vault, relay, recipient),
+            SyncAction::Receive {
+                vault,
+                relay,
+                timeout,
+            } => cmd_sync_receive(vault, relay, timeout),
         },
     }
 }
