@@ -33,6 +33,9 @@ pub mod error;
 pub mod export;
 pub mod import;
 pub mod nostr;
+/// Nostr relay WebSocket transport (requires tokio runtime).
+#[cfg(feature = "native")]
+pub mod relay;
 pub mod sync;
 pub mod vault;
 
