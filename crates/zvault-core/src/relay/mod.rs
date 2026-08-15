@@ -110,6 +110,9 @@ impl RelayClient {
     ///
     /// Returns [`Error::SyncError`] if the connection fails.
     pub async fn connect(url: &str) -> Result<Self> {
+        // Ensure the rustls crypto provider is installed (ring).
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let (ws_stream, _response) = connect_async(url)
             .await
             .map_err(|e| Error::SyncError(format!("relay connection failed: {e}")))?;
@@ -443,5 +446,69 @@ mod tests {
 
         client.close().await.unwrap();
         relay.shutdown().await;
+    }
+
+    /// Smoke test against a real public Nostr relay.
+    ///
+    /// Requires network access. Gated with `#[ignore]` — run explicitly:
+    /// ```sh
+    /// cargo test -p zvault-core --all-features relay_client_real_relay_smoke -- --ignored
+    /// ```
+    ///
+    /// Override relay URL via `ZVAULT_TEST_RELAY` env var (default: `wss://relay.damus.io`).
+    #[tokio::test]
+    #[ignore = "requires network access to a real Nostr relay"]
+    async fn relay_client_real_relay_smoke() {
+        use crate::nostr;
+        use aes_gcm::aead::OsRng as AeadOsRng;
+        use zeroize::Zeroizing;
+
+        let relay_url = std::env::var("ZVAULT_TEST_RELAY")
+            .unwrap_or_else(|_| "wss://relay.damus.io".to_string());
+
+        // Generate a throwaway keypair for signing.
+        let signing_key = k256::ecdsa::SigningKey::random(&mut AeadOsRng);
+        let sk_bytes: Zeroizing<Vec<u8>> = Zeroizing::new(signing_key.to_bytes().to_vec());
+
+        // Connect to relay.
+        let mut client = RelayClient::connect(&relay_url)
+            .await
+            .expect("failed to connect to real relay");
+
+        // Create and sign a throwaway kind=1 event.
+        let content = format!("zvault-test-{}", uuid::Uuid::new_v4());
+        #[allow(clippy::cast_possible_wrap)]
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let event =
+            nostr::sign_event(&sk_bytes, &content, 1, vec![], now).expect("sign event failed");
+
+        let event_id = event.id.clone();
+        let event_pubkey = event.pubkey.clone();
+
+        // Subscribe for events from our throwaway pubkey.
+        let filter = SubscriptionFilter {
+            kinds: Some(vec![1]),
+            authors: Some(vec![event_pubkey.clone()]),
+            since: Some(now - 10),
+            ..Default::default()
+        };
+        let mut rx = client.subscribe(filter).await.expect("subscribe failed");
+
+        // Publish to relay.
+        client.publish(&event).await.expect("publish failed");
+
+        // Wait for the event to come back through our subscription.
+        let received = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .expect("timeout waiting for event from real relay")
+            .expect("subscription channel closed");
+
+        assert_eq!(received.id, event_id);
+        assert_eq!(received.content, content);
+
+        client.close().await.ok();
     }
 }

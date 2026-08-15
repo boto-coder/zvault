@@ -14,7 +14,7 @@ default = ["biometric", "native"]
 biometric = []
 # Native platform features (filesystem I/O, async networking).
 # Disable for WASM builds.
-native = ["tokio", "tokio-tungstenite", "futures-util"]
+native = ["tokio", "tokio-tungstenite", "rustls", "futures-util"]
 # Expose InMemoryStorage and other test helpers to dependent crates (e.g. integration tests)
 test-helpers = []
 # Keyring-based SecureStorage (desktop platforms only; not available in WASM)
@@ -38,6 +38,7 @@ hex          = { workspace = true }
 totp-rs      = { workspace = true }
 tokio        = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
+rustls       = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 uuid         = { workspace = true }
 chrono       = { workspace = true }

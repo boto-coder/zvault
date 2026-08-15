@@ -40,6 +40,7 @@ totp-rs      = { version = "5.6.0" }
 # Async / networking (sync engine)
 tokio        = { version = "1.45.1", features = ["full"] }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
+rustls            = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 futures-util = { version = "0.3.31" }
 
 # Utilities

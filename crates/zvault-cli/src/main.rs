@@ -85,11 +85,15 @@ enum Commands {
         totp: bool,
     },
 
-    /// Add a new item to the vault (interactive).
+    /// Add a new item to the vault (interactive or JSON).
     Add {
         /// Path to the vault file.
         #[arg(long, short, env = "ZVAULT_PATH")]
         vault: PathBuf,
+        /// JSON string describing the item to add (non-interactive mode).
+        /// Format: {"kind":"login","name":"...","username":"...","password":"...","uri":"..."}
+        #[arg(long)]
+        json: Option<String>,
     },
 
     /// Edit an existing vault item.
@@ -514,11 +518,76 @@ fn cmd_get(vault_path: PathBuf, id_str: String, show_password: bool, totp: bool)
     Ok(())
 }
 
-fn cmd_add(vault_path: PathBuf) -> Result<()> {
+/// JSON input format for `--json` non-interactive item creation.
+#[derive(Deserialize)]
+struct JsonItemInput {
+    kind: String,
+    name: String,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    uri: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
+    totp_secret: Option<String>,
+}
+
+/// Parse a JSON string into a `VaultItem`.
+fn parse_json_item(json_str: &str) -> Result<VaultItem> {
+    let input: JsonItemInput = serde_json::from_str(json_str).context("invalid JSON item input")?;
+
+    let kind = match input.kind.to_lowercase().as_str() {
+        "login" => ItemKind::Login,
+        "note" | "securenote" | "secure_note" => ItemKind::SecureNote,
+        "card" => ItemKind::Card,
+        "identity" => ItemKind::Identity,
+        _ => bail!("unknown item kind in JSON: {}", input.kind),
+    };
+
+    if input.name.is_empty() {
+        bail!("name cannot be empty in JSON item");
+    }
+
+    let mut item = VaultItem::new(kind.clone(), &input.name);
+    match kind {
+        ItemKind::Login => {
+            item.username = input.username;
+            item.password = input.password;
+            item.totp_secret = input.totp_secret;
+            if let Some(uri) = input.uri {
+                item.uris.push(zvault_core::vault::Uri {
+                    uri,
+                    r#match: zvault_core::vault::UriMatch::Domain,
+                });
+            }
+        }
+        ItemKind::SecureNote => {
+            item.note = input.note;
+        }
+        _ => {}
+    }
+
+    Ok(item)
+}
+
+fn cmd_add(vault_path: PathBuf, json_input: Option<String>) -> Result<()> {
     let mut password = get_password("Enter master password: ")?;
     let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
     password.zeroize();
     let (vf, key, mut vault) = result?;
+
+    // Non-interactive JSON mode.
+    if let Some(json_str) = json_input {
+        let item = parse_json_item(&json_str)?;
+        let id = item.id;
+        vault.add_item(item);
+        vf.save(&key, &vault).context("failed to save vault")?;
+        println!("✓ Item added: {id}");
+        return Ok(());
+    }
 
     // Prompt for item kind.
     println!("Item types: login, note, card, identity");
@@ -1513,7 +1582,7 @@ fn main() -> Result<()> {
             show_password,
             totp,
         } => cmd_get(vault, id, show_password, totp),
-        Commands::Add { vault } => cmd_add(vault),
+        Commands::Add { vault, json } => cmd_add(vault, json),
         Commands::Edit { vault, id } => cmd_edit(vault, id),
         Commands::Delete { vault, id, yes } => cmd_delete(vault, id, yes),
         Commands::Rekey { vault } => cmd_rekey(vault),

@@ -964,3 +964,57 @@ The canonical CLI-to-CLI test (T1) follows this sequence:
 11. Assert B has the item:
     zvault list --vault vault_b.zvault | grep "GitHub"
 ```
+
+### 20.6 Real-Relay E2E Test (Network-Dependent)
+
+In addition to the embedded relay tests (T1–T3), there is a separate network-dependent
+integration test that exercises the full TLS WebSocket path against a real public Nostr relay:
+
+**File:** `crates/zvault-cli/tests/cli_sync_e2e.rs`
+
+**Relay:** Configurable via `ZVAULT_TEST_RELAY` env var (default: `wss://relay.damus.io`)
+
+**Gating:** All tests are `#[ignore]` — they do not run in normal `cargo test`.
+Invoke explicitly with:
+
+```sh
+cargo test --test cli_sync_e2e -- --ignored
+```
+
+**Test scenarios:**
+
+| Test | Description |
+|---|---|
+| `full_two_device_sync_via_real_relay` | Complete happy path: create vaults → device init → cross-admit → add item → sync send → relay propagation delay → sync receive → verify item arrived |
+| `revoked_device_sync_rejected` | Security boundary: admit B → B sends sync (accepted) → A revokes B → B sends again → A rejects (item not applied) |
+
+**What this proves beyond T1–T3:**
+
+- TLS handshake with a real relay works (rustls crypto provider)
+- NIP-01/NIP-44/NIP-59 events are accepted by real relay software
+- Subscription filters match correctly on production relay implementations
+- Gift-wrapped events survive relay-side validation and storage
+- End-to-end latency is acceptable (< 10s round-trip)
+
+**CI considerations:**
+
+- Requires outbound network access (port 443/WSS)
+- Non-deterministic (relay availability, network latency)
+- Should run in a dedicated CI job with retry logic
+- Skip in sandboxed/offline environments
+
+### 20.7 Relay Smoke Test (zvault-core)
+
+**File:** `crates/zvault-core/src/relay/mod.rs` — test `relay_client_real_relay_smoke`
+
+A minimal unit-level smoke test that validates the `RelayClient` can:
+1. Connect to a real relay over WSS/TLS
+2. Sign and publish a kind=1 event
+3. Subscribe and receive the published event back
+4. Clean up (close connection)
+
+Gated with `#[ignore]`, configurable via `ZVAULT_TEST_RELAY`.
+
+```sh
+cargo test -p zvault-core --all-features relay_client_real_relay_smoke -- --ignored
+```
