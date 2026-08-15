@@ -34,6 +34,7 @@ pub mod export;
 pub mod import;
 pub mod nip19;
 pub mod nostr;
+pub mod pairing;
 /// Nostr relay WebSocket transport (requires tokio runtime).
 #[cfg(feature = "native")]
 pub mod relay;

@@ -313,6 +313,100 @@ export default defineBackground(() => {
         return { nsec, hex: secretKeyHex };
       }
 
+      case "CREATE_INVITE_CODE": {
+        if (!sessionVaultJson) return { error: "Vault is locked" };
+        const vault = JSON.parse(sessionVaultJson);
+        const device = vault.devices?.find((d: { revoked?: boolean }) => !d.revoked);
+        if (!device) return { error: "No active device identity found" };
+        const { initWasm: initWasmPair } = await import("../lib/wasm");
+        const wasmPair = await initWasmPair();
+        try {
+          const vaultId = vault.vault_id || vault.id;
+          const code = wasmPair.create_invite_code(device.nostr_pubkey, device.label, vaultId);
+          return { code };
+        } catch (err) {
+          return { error: `Failed to create invite code: ${err}` };
+        }
+      }
+
+      case "CREATE_JOIN_REQUEST_CODE": {
+        if (!sessionVaultJson) return { error: "Vault is locked" };
+        const vault = JSON.parse(sessionVaultJson);
+        const device = vault.devices?.find((d: { revoked?: boolean }) => !d.revoked);
+        if (!device) return { error: "No active device identity found" };
+        const { initWasm: initWasmJoin } = await import("../lib/wasm");
+        const wasmJoin = await initWasmJoin();
+        try {
+          const code = wasmJoin.create_join_request_code(device.nostr_pubkey, device.label);
+          return { code };
+        } catch (err) {
+          return { error: `Failed to create join request code: ${err}` };
+        }
+      }
+
+      case "IMPORT_PAIRING_CODE": {
+        const { code: pairingCode } = message.payload as { code: string };
+        const { initWasm: initWasmDecode } = await import("../lib/wasm");
+        const wasmDecode = await initWasmDecode();
+        try {
+          const payload = wasmDecode.decode_pairing_code(pairingCode);
+          return { payload };
+        } catch (err) {
+          return { error: `Invalid pairing code: ${err}` };
+        }
+      }
+
+      case "CONFIRM_PAIRING": {
+        if (!sessionVaultJson || !sessionPassword) return { error: "Vault is locked" };
+        const { pubkeyHex: pairPubkey, label: pairLabel, pairingType } = message.payload as {
+          pubkeyHex: string;
+          label: string;
+          pairingType: string;
+        };
+        const { initWasm: initWasmConfirm } = await import("../lib/wasm");
+        const wasmConfirm = await initWasmConfirm();
+        try {
+          // Admit the device
+          sessionVaultJson = wasmConfirm.admit_device_from_pairing(
+            sessionVaultJson,
+            pairPubkey,
+            pairLabel
+          );
+          // Persist
+          const encryptedPair = wasmConfirm.encrypt_vault(sessionPassword, sessionVaultJson);
+          await browser.storage.local.set({ vault: Array.from(encryptedPair) });
+          // Generate response code if needed
+          let responseCode: string | null = null;
+          if (pairingType === "invite" || pairingType === "join_request") {
+            const vault = JSON.parse(sessionVaultJson);
+            const myDevice = vault.devices?.find(
+              (d: { revoked?: boolean; nostr_pubkey: string }) =>
+                !d.revoked && d.nostr_pubkey !== pairPubkey.toLowerCase()
+            );
+            if (myDevice) {
+              const vaultId = vault.vault_id || vault.id;
+              if (pairingType === "invite") {
+                responseCode = wasmConfirm.create_response_code(
+                  "invite_response",
+                  myDevice.nostr_pubkey,
+                  myDevice.label
+                );
+              } else {
+                responseCode = wasmConfirm.create_response_code(
+                  "join_response",
+                  myDevice.nostr_pubkey,
+                  myDevice.label,
+                  vaultId
+                );
+              }
+            }
+          }
+          return { success: true, responseCode };
+        } catch (err) {
+          return { error: `Pairing failed: ${err}` };
+        }
+      }
+
       default:
         return { error: `Unknown message type: ${message.type}` };
     }

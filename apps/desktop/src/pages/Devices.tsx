@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import DevicePubkeyCard from "../components/DevicePubkeyCard";
 import ExportSecretKeyDialog from "../components/ExportSecretKeyDialog";
+import { InviteDeviceDialog } from "../components/InviteDeviceDialog";
+import { JoinRequestDialog } from "../components/JoinRequestDialog";
+import { ConfirmPairingDialog } from "../components/ConfirmPairingDialog";
 
 interface DeviceSummary {
   device_id: string;
@@ -22,6 +25,9 @@ function Devices({ onBack, vaultPath }: Props) {
   const [showAdmit, setShowAdmit] = useState(false);
   const [revokeConfirm, setRevokeConfirm] = useState<DeviceSummary | null>(null);
   const [showExportKey, setShowExportKey] = useState(false);
+  const [showInvite, setShowInvite] = useState(false);
+  const [showJoinRequest, setShowJoinRequest] = useState(false);
+  const [showPasteCode, setShowPasteCode] = useState(false);
 
   // Admit form
   const [admitPubkey, setAdmitPubkey] = useState("");
@@ -108,13 +114,37 @@ function Devices({ onBack, vaultPath }: Props) {
           <h1 className="text-xl font-bold text-zvault-700 dark:text-zvault-300">
             Devices
           </h1>
-          <button
-            type="button"
-            onClick={() => setShowAdmit(true)}
-            className="px-3 py-1.5 text-sm bg-zvault-600 hover:bg-zvault-700 text-white rounded-lg transition-colors"
-          >
-            + Admit Device
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setShowInvite(true)}
+              className="px-3 py-1.5 text-sm bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+            >
+              Invite
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowJoinRequest(true)}
+              className="px-3 py-1.5 text-sm bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors"
+            >
+              Join Request
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowPasteCode(true)}
+              className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+            >
+              Paste Code
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAdmit(true)}
+              className="px-3 py-1.5 text-sm bg-zvault-600 hover:bg-zvault-700 text-white rounded-lg transition-colors"
+              title="Advanced: manual admit by public key"
+            >
+              + Admit (Advanced)
+            </button>
+          </div>
         </div>
       </header>
 
@@ -288,6 +318,30 @@ function Devices({ onBack, vaultPath }: Props) {
         open={showExportKey}
         onClose={() => setShowExportKey(false)}
       />
+
+      {/* Invite Device Dialog */}
+      {showInvite && (
+        <InviteDeviceDialog
+          onClose={() => setShowInvite(false)}
+          onDeviceAdmitted={loadDevices}
+        />
+      )}
+
+      {/* Join Request Dialog */}
+      {showJoinRequest && (
+        <JoinRequestDialog
+          onClose={() => setShowJoinRequest(false)}
+          onDeviceAdmitted={loadDevices}
+        />
+      )}
+
+      {/* Paste Code (Confirm Pairing) Dialog */}
+      {showPasteCode && (
+        <ConfirmPairingDialog
+          onClose={() => setShowPasteCode(false)}
+          onDeviceAdmitted={loadDevices}
+        />
+      )}
     </div>
   );
 }

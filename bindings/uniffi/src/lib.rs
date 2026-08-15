@@ -61,6 +61,7 @@ impl From<zvault_core::Error> for ZVaultError {
             zvault_core::Error::SyncError(msg) => ZVaultError::IoError(msg),
             zvault_core::Error::Utf8(err) => ZVaultError::SerialisationError(err.to_string()),
             zvault_core::Error::Base64(err) => ZVaultError::SerialisationError(err.to_string()),
+            zvault_core::Error::InvalidPairingCode(msg) => ZVaultError::InvalidInput(msg),
         }
     }
 }
