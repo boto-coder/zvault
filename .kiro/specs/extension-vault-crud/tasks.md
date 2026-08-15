@@ -6,8 +6,8 @@ Add item creation capability to the ZVault browser extension. This involves a ne
 
 ## Tasks
 
-- [ ] 1. Add `generate_password` to the WASM crate
-  - [ ] 1.1 Implement `generate_password` function in `crates/zvault-wasm/src/lib.rs`
+- [x] 1. Add `generate_password` to the WASM crate
+  - [x] 1.1 Implement `generate_password` function in `crates/zvault-wasm/src/lib.rs`
     - Add a `#[wasm_bindgen]` function `generate_password(length: Option<u32>) -> Result<String, JsValue>`
     - Use `getrandom` crate (with `js` feature) as entropy source
     - Guarantee at least one character from each of four classes: uppercase (A-Z), lowercase (a-z), digit (0-9), special (`!@#$%^&*()_+-=[]{}|;:,.<>?`)
@@ -17,33 +17,33 @@ Add item creation capability to the ZVault browser extension. This involves a ne
     - Default to length 20 when `None` is passed
     - _Requirements: 7.2, 7.4, 12.1, 12.2, 12.3, 12.4, 12.5_
 
-  - [ ]* 1.2 Write unit tests for `generate_password` in `crates/zvault-wasm/src/lib.rs` or a tests module
+  - [x]* 1.2 Write unit tests for `generate_password` in `crates/zvault-wasm/src/lib.rs` or a tests module
     - **Property 5: Password generation guarantees character class coverage** — for random valid lengths (4..128), verify output length matches and all 4 character classes are present
     - **Property 6: Password generation rejects invalid lengths** — for lengths 0, 1, 2, 3, verify an error is returned
     - Test default length (None → 20 characters)
     - **Validates: Requirements 7.4, 12.2, 12.4, 12.5**
 
-- [ ] 2. Update the WASM TypeScript bridge
-  - [ ] 2.1 Add `generate_password` to the `ZVaultWasm` interface and `initWasm()` wiring in `apps/extension/src/lib/wasm.ts`
+- [x] 2. Update the WASM TypeScript bridge
+  - [x] 2.1 Add `generate_password` to the `ZVaultWasm` interface and `initWasm()` wiring in `apps/extension/src/lib/wasm.ts`
     - Add `generate_password(length?: number): string` to the `ZVaultWasm` interface
     - Wire `glueModule.generate_password` into the `wasmInstance` object in `initWasm()`
     - _Requirements: 12.1_
 
-- [ ] 3. Implement view routing and Add button
-  - [ ] 3.1 Update the `View` type and `App` component in `apps/extension/src/entrypoints/popup/App.tsx`
+- [x] 3. Implement view routing and Add button
+  - [x] 3.1 Update the `View` type and `App` component in `apps/extension/src/entrypoints/popup/App.tsx`
     - Add `"create-item"` to the `View` type union
     - Add a `case "create-item"` branch in the App switch that renders `<ItemCreateView>`
     - Pass `onSave` (calls `loadItems()` then `setView("items")`) and `onCancel` (calls `setView("items")`) props
     - _Requirements: 1.2, 1.3_
 
-  - [ ] 3.2 Add an "Add" button to `ItemListView` in `apps/extension/src/entrypoints/popup/App.tsx`
+  - [x] 3.2 Add an "Add" button to `ItemListView` in `apps/extension/src/entrypoints/popup/App.tsx`
     - Place a "+" / "Add" button in the header bar next to the Lock button
     - Wire it to call a new `onAdd` prop that triggers `setView("create-item")`
     - Use consistent inline styles (border, background, color matching existing buttons)
     - _Requirements: 1.1_
 
-- [ ] 4. Implement the `ItemCreateView` component
-  - [ ] 4.1 Create the `ItemCreateView` component shell and item type selector
+- [x] 4. Implement the `ItemCreateView` component
+  - [x] 4.1 Create the `ItemCreateView` component shell and item type selector
     - Add a new `ItemCreateView` function component in `apps/extension/src/entrypoints/popup/App.tsx`
     - Accept props: `onSave: () => void`, `onCancel: () => void`
     - Render a header with "Add Item" title and a Cancel/Back button
@@ -53,7 +53,7 @@ Add item creation capability to the ZVault browser extension. This involves a ne
     - Handle Escape key to trigger cancel
     - _Requirements: 1.2, 1.3, 2.1, 2.2, 2.3, 13.2, 14.1, 14.2, 14.3_
 
-  - [ ] 4.2 Implement the Login form fields
+  - [x] 4.2 Implement the Login form fields
     - Conditionally render when `kind === "login"`: name (required), username, password (with generate button), TOTP secret, and URI list
     - Each URI entry has a text input and a match-strategy select (Domain, Host, StartsWith, Exact, Regex, Never)
     - Include "Add URI" button to append a new empty URI entry
@@ -62,26 +62,26 @@ Add item creation capability to the ZVault browser extension. This involves a ne
     - Apply `aria-label` on icon-only buttons (generate, add URI, remove URI)
     - _Requirements: 3.1, 3.2, 3.3, 3.4, 7.1, 8.1, 8.2, 8.3, 13.1, 13.4_
 
-  - [ ] 4.3 Implement the Secure Note form fields
+  - [x] 4.3 Implement the Secure Note form fields
     - Conditionally render when `kind === "secure_note"`: name (required), note (multi-line textarea, min 4 visible lines)
     - _Requirements: 4.1, 4.2_
 
-  - [ ] 4.4 Implement the Card form fields
+  - [x] 4.4 Implement the Card form fields
     - Conditionally render when `kind === "card"`: name (required), cardholder name, card number, expiry date, CVV (masked by default using `type="password"`)
     - _Requirements: 5.1, 5.2_
 
-  - [ ] 4.5 Implement the Identity form fields
+  - [x] 4.5 Implement the Identity form fields
     - Conditionally render when `kind === "identity"`: name (required), first name, last name, address, city, country, phone, email
     - _Requirements: 6.1_
 
-  - [ ] 4.6 Implement password generation UI
+  - [x] 4.6 Implement password generation UI
     - Add a "Generate" button next to the password field in the Login form
     - On click, call `browser.runtime.sendMessage({ type: "GENERATE_PASSWORD" })` or import WASM bridge directly in popup
     - Populate the password field with the generated value
     - Handle errors (show inline error if generation fails)
     - _Requirements: 7.1, 7.3_
 
-  - [ ] 4.7 Implement form validation and save
+  - [x] 4.7 Implement form validation and save
     - Validate name field is non-empty (trim whitespace) before submission
     - Show inline validation error (`role="alert"`, color `#ff6b6b`) adjacent to name field if empty
     - Disable save button while save is in progress (`saving` state)
@@ -90,7 +90,7 @@ Add item creation capability to the ZVault browser extension. This involves a ne
     - On error: display error banner at top of form with `role="alert"`, retain form data
     - _Requirements: 9.1, 9.2, 9.3, 10.1, 10.3, 10.4, 13.3_
 
-  - [ ] 4.8 Ensure accessibility compliance across the form
+  - [x] 4.8 Ensure accessibility compliance across the form
     - Every input has a paired `<label htmlFor="...">` with matching `id`
     - Tab order follows visual layout (no `tabIndex` overrides)
     - Escape triggers cancel, Enter on submit button triggers save
@@ -98,27 +98,27 @@ Add item creation capability to the ZVault browser extension. This involves a ne
     - Validation errors use `role="alert"`
     - _Requirements: 13.1, 13.2, 13.3, 13.4_
 
-- [ ] 5. Checkpoint — Ensure build and lint pass
+- [x] 5. Checkpoint — Ensure build and lint pass
   - Ensure `cargo build -p zvault-wasm` succeeds
   - Ensure TypeScript compiles without errors in `apps/extension/`
   - Ensure `cargo clippy --workspace --all-targets --all-features -- -D warnings` produces zero warnings
   - Ask the user if questions arise.
 
-- [ ] 6. Add fire-and-forget Nostr sync after save
-  - [ ] 6.1 Add async sync trigger in the `ADD_ITEM` handler in `apps/extension/src/entrypoints/background.ts`
+- [x] 6. Add fire-and-forget Nostr sync after save
+  - [x] 6.1 Add async sync trigger in the `ADD_ITEM` handler in `apps/extension/src/entrypoints/background.ts`
     - After successful persist to `browser.storage.local`, fire an async `triggerNostrSync()` call
     - The sync function builds a NIP-44/NIP-59 message and publishes to configured relays
     - Catch and log any sync errors (`console.warn`) — never propagate to popup response
     - Return `{ success: true }` to the popup before sync completes
     - _Requirements: 11.1, 11.2, 11.3_
 
-- [ ] 7. Add `GENERATE_PASSWORD` message handler to background (if popup calls via message)
-  - [ ] 7.1 Add a `GENERATE_PASSWORD` case in `handleMessage` in `apps/extension/src/entrypoints/background.ts`
+- [x] 7. Add `GENERATE_PASSWORD` message handler to background (if popup calls via message)
+  - [x] 7.1 Add a `GENERATE_PASSWORD` case in `handleMessage` in `apps/extension/src/entrypoints/background.ts`
     - Import and call `wasm.generate_password(payload?.length)` 
     - Return `{ password: string }` on success or `{ error: string }` on failure
     - _Requirements: 7.2, 12.1_
 
-- [ ] 8. Final checkpoint — Full verification
+- [x] 8. Final checkpoint — Full verification
   - Run `cargo build --workspace` — must succeed
   - Run `cargo test --workspace --all-features` — all tests pass
   - Run `cargo clippy --workspace --all-targets --all-features -- -D warnings` — zero warnings

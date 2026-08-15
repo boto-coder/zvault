@@ -6,29 +6,29 @@ Verify that two CLI process instances can sync through a real public Nostr relay
 
 ## Tasks
 
-- [ ] 1. Verify existing `RelayClient` and sync commands work
-  - [ ] 1.1 Confirm `RelayClient` in `crates/zvault-core/src/relay/mod.rs` compiles and connects
+- [x] 1. Verify existing `RelayClient` and sync commands work
+  - [x] 1.1 Confirm `RelayClient` in `crates/zvault-core/src/relay/mod.rs` compiles and connects
     - Verify `publish`, `subscribe`, `close` work against a real relay
     - If any issues found, fix them (connection handling, TLS, timeout)
     - _Requirements: 1.1–1.7_
 
-  - [ ] 1.2 Confirm `SubscriptionFilter` serialises correctly for NIP-01
+  - [x] 1.2 Confirm `SubscriptionFilter` serialises correctly for NIP-01
     - Verify `kinds`, `authors`, `#p` tag, `since`, `limit` fields
     - _Requirements: 1.4_
 
-  - [ ] 1.3 Write a smoke test for `RelayClient` against the real relay
+  - [x] 1.3 Write a smoke test for `RelayClient` against the real relay
     - Gated behind `#[ignore]` (requires network)
     - Connect to relay from `ZVAULT_TEST_RELAY` env var (default: `wss://relay.damus.io`)
     - Publish a throwaway event, subscribe, verify receipt
     - Timeout: 10s
     - _Requirements: 1.3, 1.4, 1.5_
 
-- [ ] 2. Implement CLI `device init` subcommand
-  - [ ] 2.1 Add `Init` variant to `DeviceAction` subcommand
+- [x] 2. Implement CLI `device init` subcommand
+  - [x] 2.1 Add `Init` variant to `DeviceAction` subcommand
     - Args: `--vault <path>`, `--label <name>`
     - _Requirements: 4.1_
 
-  - [ ] 2.2 Implement `cmd_device_init` function
+  - [x] 2.2 Implement `cmd_device_init` function
     - Generate secp256k1 keypair using `DeviceIdentity::generate` with an `InMemoryStorage`
     - Extract secret key bytes
     - Serialize `CliDeviceFile` to JSON
@@ -38,34 +38,34 @@ Verify that two CLI process instances can sync through a real public Nostr relay
     - Print pubkey hex and device_id
     - _Requirements: 4.2, 4.3, 4.5_
 
-  - [ ] 2.3 Implement `load_device_identity(vault_path, password)` helper
+  - [x] 2.3 Implement `load_device_identity(vault_path, password)` helper
     - Read `<vault_path>.device`, decrypt with password, parse `CliDeviceFile`
     - Return `(device_id, secret_key_bytes, pubkey_hex)`
     - Error if file doesn't exist: "Device identity not initialised"
     - _Requirements: 4.4_
 
-  - [ ] 2.4 Guard against re-init
+  - [x] 2.4 Guard against re-init
     - If sidecar file exists, exit with error: "Device already initialised"
     - _Requirements: 4.4_
 
-  - [ ] 2.5 Update `device admit` to accept `--pubkey` argument
+  - [x] 2.5 Update `device admit` to accept `--pubkey` argument
     - Currently generates a placeholder pubkey — change to accept real pubkey from the other device
     - Add `--pubkey <hex>` arg to `Admit` variant
     - _Requirements: 5.4_
 
-- [ ] 3. Checkpoint: CLI builds with new device init
+- [x] 3. Checkpoint: CLI builds with new device init
   - `cargo build --workspace`
   - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 
-- [ ] 4. Write CLI-to-CLI integration test (real relay)
-  - [ ] 4.1 Create `crates/zvault-cli/tests/cli_sync_e2e.rs`
+- [x] 4. Write CLI-to-CLI integration test (real relay)
+  - [x] 4.1 Create `crates/zvault-cli/tests/cli_sync_e2e.rs`
     - Gated with `#[ignore]` attribute (requires network access to public relay)
     - Reads relay URL from `ZVAULT_TEST_RELAY` env var, defaults to `wss://relay.damus.io`
     - Uses `std::process::Command` to invoke the `zvault` binary (built via `cargo build`)
     - Sets `ZVAULT_PASSWORD` env var for all invocations (non-interactive mode)
     - _Requirements: 5.1, 5.2, 5.9_
 
-  - [ ] 4.2 Implement test scenario: full two-device sync via real relay
+  - [x] 4.2 Implement test scenario: full two-device sync via real relay
     - Step 1: Create two temp vault files (A and B)
     - Step 2: `zvault device init` on both vaults → capture pubkeys from stdout
     - Step 3: Cross-admit: `zvault device admit --pubkey <B_pub>` on A, and vice versa
@@ -77,27 +77,27 @@ Verify that two CLI process instances can sync through a real public Nostr relay
     - Timeout: 30s total for the test
     - _Requirements: 5.3, 5.4, 5.5, 5.6, 5.8_
 
-  - [ ] 4.3 Implement test scenario: revoked device sync rejected
+  - [x] 4.3 Implement test scenario: revoked device sync rejected
     - A admits B, B sends sync, A receives (succeeds)
     - A revokes B, B sends another sync → A receives → item NOT applied
     - Assert A's vault state unchanged after revoked sync
     - _Requirements: 5.7_
 
-  - [ ] 4.4 Add CI configuration note
+  - [x] 4.4 Add CI configuration note
     - Document in test file header: run with `cargo test --test cli_sync_e2e -- --ignored`
     - Document `ZVAULT_TEST_RELAY` env var override
     - Note: test requires network access, skip in offline/sandboxed CI environments
     - _Requirements: 5.9_
 
-- [ ] 5. Write DESIGN.md test scenario matrix
-  - [ ] 5.1 Add "§20 Integration & E2E Test Plan" section to DESIGN.md
+- [x] 5. Write DESIGN.md test scenario matrix
+  - [x] 5.1 Add "§20 Integration & E2E Test Plan" section to DESIGN.md
     - Full scenario matrix table (T1–T10) covering all platform combinations
     - Automation Architecture subsection (tooling per platform)
     - CI Integration subsection (what runs automatically vs what needs network/manual)
     - Note which tests use real relays vs mock/embedded
     - _Requirements: 6.1–6.5_
 
-- [ ] 6. Final Verification
+- [x] 6. Final Verification
   - `cargo build --workspace` succeeds
   - `cargo test --workspace --all-features` passes (unit tests, no network)
   - `cargo test --test cli_sync_e2e -- --ignored` passes (requires network)
