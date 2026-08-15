@@ -27,6 +27,9 @@ zeroize = { version = "1.8", features = ["derive"] }
 # AES-GCM for OsRng (rand_core 0.6 — see tech.md)
 aes-gcm = "0.10"
 
+# TOTP
+totp-rs = "5.6"
+
 # ZVault core library (path dependency)
 zvault-core = { path = "../../../crates/zvault-core", default-features = false }
 

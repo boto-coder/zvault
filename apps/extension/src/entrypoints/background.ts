@@ -185,7 +185,9 @@ export default defineBackground(() => {
         const { initWasm } = await import("../lib/wasm");
         const wasm = await initWasm();
         const code = wasm.generate_totp(secret);
-        return { code };
+        const now = Math.floor(Date.now() / 1000);
+        const remainingSeconds = 30 - (now % 30);
+        return { code, remainingSeconds };
       }
 
       default:

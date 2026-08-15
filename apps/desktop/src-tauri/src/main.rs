@@ -546,6 +546,51 @@ fn rekey_vault(
     Ok(())
 }
 
+// ─── TOTP commands ───────────────────────────────────────────────────────────
+
+/// Response from the TOTP generation command.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TotpResponse {
+    code: String,
+    remaining_seconds: u32,
+}
+
+/// Generate a TOTP code from a base32 secret.
+#[tauri::command]
+fn generate_totp(secret: String) -> Result<TotpResponse, String> {
+    use totp_rs::{Algorithm, TOTP};
+
+    let secret_bytes = secret.as_bytes().to_vec();
+    let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes)
+        .map_err(|e| format!("Invalid TOTP secret: {e}"))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("System clock error: {e}"))?
+        .as_secs();
+
+    let code = totp.generate(now);
+    let remaining = 30 - (now % 30) as u32;
+
+    Ok(TotpResponse {
+        code,
+        remaining_seconds: remaining,
+    })
+}
+
+/// Validate a TOTP secret (check that it can produce a valid code).
+#[tauri::command]
+fn validate_totp_secret(secret: String) -> Result<(), String> {
+    use totp_rs::{Algorithm, TOTP};
+
+    let secret_bytes = secret.as_bytes().to_vec();
+    TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes)
+        .map_err(|e| format!("Invalid TOTP secret: {e}"))?;
+
+    Ok(())
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -568,6 +613,8 @@ fn main() {
             admit_device,
             revoke_device,
             rekey_vault,
+            generate_totp,
+            validate_totp_secret,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

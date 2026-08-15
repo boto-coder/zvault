@@ -888,3 +888,79 @@ Security constraints:
 │  Argon2id │ AES-256-GCM │ NIP-44 │ CRDT │ Vault CRUD   │
 └─────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 20. Integration & E2E Test Plan
+
+This section documents the cross-platform integration and end-to-end test scenarios for ZVault sync. These tests validate that the full protocol stack (NIP-44 encryption, NIP-01 signing, NIP-59 gift-wrap, relay transport, CRDT merge) works correctly across all supported clients.
+
+### 20.1 Test Scenario Matrix
+
+| # | Scenario | Platforms | What's Tested | Automation Approach | CI Feasible? |
+|---|---|---|---|---|---|
+| T1 | CLI↔CLI full sync | 2× CLI process | Relay transport, NIP-44/59, item merge | `assert_cmd` + embedded relay | ✅ Yes |
+| T2 | CLI↔CLI revoked device rejected | 2× CLI process | Revocation enforcement over relay | `assert_cmd` + embedded relay | ✅ Yes |
+| T3 | CLI↔CLI concurrent edits (conflict) | 2× CLI process | LWW merge, version ordering | `assert_cmd` + embedded relay | ✅ Yes |
+| T4 | Desktop↔CLI sync | Tauri + CLI | Cross-platform interop, same relay | Tauri test + `assert_cmd` + relay | ✅ Headless |
+| T5 | Desktop↔Extension sync | Tauri + WXT | WASM↔native crypto compat | Tauri test + Playwright + relay | ⚠️ Needs display |
+| T6 | Extension self-test | WXT (Firefox) | WASM crypto, storage, background | Playwright + web-ext | ✅ Yes |
+| T7 | Extension↔Desktop↔Android | All three | Full mesh convergence | Playwright + Tauri + Espresso + relay | ❌ Manual / Nightly |
+| T8 | Three CLI devices mesh | 3× CLI process | Multi-device convergence | `assert_cmd` + embedded relay | ✅ Yes |
+| T9 | Stale message replay | 2× CLI process | Replay protection via version | `assert_cmd` + embedded relay | ✅ Yes |
+| T10 | Large vault sync (1000 items) | 2× CLI process | Performance, correctness at scale | `assert_cmd` + embedded relay | ✅ Yes |
+
+### 20.2 Automation Architecture
+
+| Platform | Tooling | Notes |
+|---|---|---|
+| CLI | `assert_cmd` + `predicates` crates | Invoke binary, assert stdout/exit code |
+| Desktop (Tauri) | `tauri-driver` + WebDriver | Headless Tauri testing, invoke commands programmatically |
+| Extension (WXT) | Playwright + `web-ext` | Load extension in browser, automate popup interactions |
+| Android | Espresso + UI Automator | Instrumented tests, requires emulator |
+| Relay | Embedded `TestRelay` (in-process) or Docker `nostr-rs-relay` | In-process preferred for speed |
+
+### 20.3 CI Integration
+
+| Test Category | CI Runner | Requirements | Run Frequency |
+|---|---|---|---|
+| T1–T3, T8–T10 (CLI-only) | Ubuntu runner | Rust toolchain, no special deps | Every PR |
+| T4 (Desktop↔CLI) | Ubuntu runner | Rust + Node.js, headless | Every PR |
+| T5 (Desktop↔Extension) | Ubuntu runner + Xvfb | Rust + Node.js + Firefox | Nightly |
+| T6 (Extension self-test) | Ubuntu runner | Node.js + Firefox | Every PR |
+| T7 (Full mesh) | Self-hosted with emulator | All toolchains + Android emulator | Weekly / Manual |
+
+### 20.4 Embedded Test Relay
+
+The test relay (`crates/zvault-core/src/relay/test_relay.rs`) is a minimal in-process NIP-01 relay:
+
+- Binds to `127.0.0.1:0` (random port) — no port conflicts in CI
+- Stores events in memory (no persistence needed for tests)
+- Implements: `EVENT` (store + forward + OK), `REQ` (replay + stream), `CLOSE`
+- Filter matching: `kinds`, `authors`, `#p` tags, `since`/`until`
+- Gated behind `#[cfg(any(test, feature = "test-helpers"))]`
+
+### 20.5 CLI Sync E2E Test Flow
+
+The canonical CLI-to-CLI test (T1) follows this sequence:
+
+```
+1. Start embedded relay on random port
+2. Create temp directory with vault_a.zvault and vault_b.zvault
+3. zvault init vault_a.zvault                     (ZVAULT_PASSWORD=testpw)
+4. zvault device init --vault vault_a.zvault --label "Device A"
+   → capture A's pubkey from stdout
+5. zvault init vault_b.zvault                     (ZVAULT_PASSWORD=testpw)
+6. zvault device init --vault vault_b.zvault --label "Device B"
+   → capture B's pubkey from stdout
+7. Cross-admit: A admits B, B admits A
+   zvault device admit --vault vault_a.zvault --label "Device B" --pubkey <B_pub>
+   zvault device admit --vault vault_b.zvault --label "Device A" --pubkey <A_pub>
+8. A adds an item (non-interactive via stdin pipe or --json flag)
+9. A sends sync:
+   zvault sync send --vault vault_a.zvault --relay ws://127.0.0.1:<port> --recipient <B_pub>
+10. B receives sync:
+    zvault sync receive --vault vault_b.zvault --relay ws://127.0.0.1:<port> --timeout 5
+11. Assert B has the item:
+    zvault list --vault vault_b.zvault | grep "GitHub"
+```
