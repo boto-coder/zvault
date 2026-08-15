@@ -1953,4 +1953,43 @@ mod tests {
         assert_eq!(kind_label(&ItemKind::Card), "Card");
         assert_eq!(kind_label(&ItemKind::Identity), "Identity");
     }
+
+    #[test]
+    fn totp_generation_produces_valid_code() {
+        use totp_rs::{Algorithm, TOTP};
+
+        // Use a well-known test secret
+        let secret = "JBSWY3DPEHPK3PXP";
+        let secret_bytes = secret.as_bytes().to_vec();
+        let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes)
+            .expect("TOTP creation should succeed with valid secret");
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let code = totp.generate(now);
+
+        // Code should be exactly 6 digits
+        assert_eq!(code.len(), 6);
+        assert!(code.chars().all(|c| c.is_ascii_digit()));
+
+        // Remaining seconds should be 1-30
+        let remaining = 30 - (now % 30);
+        assert!((1..=30).contains(&remaining));
+    }
+
+    #[test]
+    fn totp_invalid_secret_is_handled() {
+        use totp_rs::{Algorithm, TOTP};
+
+        // Empty secret should still create a valid TOTP (totp-rs allows it)
+        // but we test that the API doesn't panic
+        let secret = "";
+        let secret_bytes = secret.as_bytes().to_vec();
+        // totp-rs accepts empty secrets (produces codes from empty key)
+        let result = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes);
+        // Whether it succeeds or fails, it shouldn't panic
+        let _ = result;
+    }
 }

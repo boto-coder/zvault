@@ -200,6 +200,36 @@ export function App() {
     }
   }
 
+  async function handleCopyTotp(itemId: string) {
+    try {
+      // First get the item to retrieve its TOTP secret
+      const getResp = (await browser.runtime.sendMessage({
+        type: "GET_ITEM",
+        payload: { id: itemId },
+      })) as MessageResponse;
+      if (getResp.error || !getResp.item?.totp_secret) {
+        showToast("No TOTP configured");
+        return;
+      }
+      // Generate the TOTP code
+      const totpResp = (await browser.runtime.sendMessage({
+        type: "GENERATE_TOTP",
+        payload: { secret: getResp.item.totp_secret },
+      })) as MessageResponse;
+      if (totpResp.code) {
+        await navigator.clipboard.writeText(totpResp.code);
+        showToast("TOTP copied!");
+        setTimeout(() => {
+          navigator.clipboard.writeText("").catch(() => {});
+        }, 30000);
+      } else {
+        showToast("Failed to generate TOTP");
+      }
+    } catch {
+      showToast("Failed to copy TOTP");
+    }
+  }
+
   function handleSelectItem(id: string) {
     setSelectedItemId(id);
     setView("item-detail");
@@ -222,6 +252,7 @@ export function App() {
                 items={items}
                 onLock={handleLock}
                 onCopyPassword={handleCopyPassword}
+                onCopyTotp={handleCopyTotp}
                 onAdd={() => setView("create-item")}
                 onSelectItem={handleSelectItem}
                 onDevices={() => setView("devices")}
@@ -429,6 +460,7 @@ function ItemListView({
   items,
   onLock,
   onCopyPassword,
+  onCopyTotp,
   onAdd,
   onSelectItem,
   onDevices,
@@ -437,6 +469,7 @@ function ItemListView({
   items: VaultItem[];
   onLock: () => void;
   onCopyPassword: (id: string) => void;
+  onCopyTotp: (id: string) => void;
   onAdd: () => void;
   onSelectItem: (id: string) => void;
   onDevices: () => void;
@@ -543,6 +576,7 @@ function ItemListView({
                     item={item}
                     onSelect={() => onSelectItem(item.id)}
                     onCopy={() => onCopyPassword(item.id)}
+                    onCopyTotp={() => onCopyTotp(item.id)}
                   />
                 ))}
               </ul>
@@ -562,6 +596,7 @@ function ItemListView({
                 item={item}
                 onSelect={() => onSelectItem(item.id)}
                 onCopy={() => onCopyPassword(item.id)}
+                onCopyTotp={() => onCopyTotp(item.id)}
               />
             ))}
           </ul>
@@ -575,10 +610,12 @@ function ItemListRow({
   item,
   onSelect,
   onCopy,
+  onCopyTotp,
 }: {
   item: VaultItem;
   onSelect: () => void;
   onCopy: () => void;
+  onCopyTotp: () => void;
 }) {
   const icon = kindIcons[item.kind] || "📦";
   const firstDomain = item.kind === "login" && item.uris?.[0]
@@ -617,16 +654,30 @@ function ItemListRow({
         </div>
       </div>
       {item.kind === "login" && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onCopy();
-          }}
-          title="Copy password"
-          style={{ padding: "0.25rem 0.5rem", borderRadius: "4px", border: "1px solid #444", background: "transparent", color: "#e0e0e0", cursor: "pointer", fontSize: "0.75rem", flexShrink: 0 }}
-        >
-          📋
-        </button>
+        <div style={{ display: "flex", gap: "0.25rem", flexShrink: 0 }}>
+          {item.totp_secret && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onCopyTotp();
+              }}
+              title="Copy TOTP"
+              style={{ padding: "0.25rem 0.5rem", borderRadius: "4px", border: "1px solid #444", background: "transparent", color: "#e0e0e0", cursor: "pointer", fontSize: "0.75rem" }}
+            >
+              🕐
+            </button>
+          )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onCopy();
+            }}
+            title="Copy password"
+            style={{ padding: "0.25rem 0.5rem", borderRadius: "4px", border: "1px solid #444", background: "transparent", color: "#e0e0e0", cursor: "pointer", fontSize: "0.75rem" }}
+          >
+            📋
+          </button>
+        </div>
       )}
     </li>
   );

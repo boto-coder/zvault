@@ -642,6 +642,7 @@ fn reset_relays(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     Ok(())
+}
 // ─── Device key display/export commands ──────────────────────────────────────
 
 /// Device public key information.
