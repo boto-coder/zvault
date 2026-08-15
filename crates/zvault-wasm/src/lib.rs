@@ -167,6 +167,84 @@ pub fn generate_totp(secret: &str) -> Result<String, JsValue> {
     Ok(totp.generate(time))
 }
 
+// ─── Relay settings WASM bindings ────────────────────────────────────────────
+
+/// Validate a relay URL. Returns the normalised URL on success.
+#[wasm_bindgen]
+pub fn validate_relay_url(url: &str) -> Result<String, JsValue> {
+    zvault_core::settings::validate_relay_url(url).map_err(|e| JsValue::from_str(&e))
+}
+
+/// Add a relay to a vault (given as JSON). Returns the updated vault JSON.
+#[wasm_bindgen]
+pub fn add_relay_to_vault(vault_json: &str, url: &str) -> Result<String, JsValue> {
+    let mut vault: Vault = serde_json::from_str(vault_json)
+        .map_err(|e| JsValue::from_str(&format!("invalid vault JSON: {e}")))?;
+
+    zvault_core::settings::add_relay(&mut vault.settings, url)
+        .map_err(|e| JsValue::from_str(&e))?;
+
+    vault.version += 1;
+    serde_json::to_string(&vault)
+        .map_err(|e| JsValue::from_str(&format!("serialisation error: {e}")))
+}
+
+/// Remove a relay from a vault (given as JSON). Returns the updated vault JSON.
+#[wasm_bindgen]
+pub fn remove_relay_from_vault(vault_json: &str, url: &str) -> Result<String, JsValue> {
+    let mut vault: Vault = serde_json::from_str(vault_json)
+        .map_err(|e| JsValue::from_str(&format!("invalid vault JSON: {e}")))?;
+
+    zvault_core::settings::remove_relay(&mut vault.settings, url)
+        .map_err(|e| JsValue::from_str(&e))?;
+
+    vault.version += 1;
+    serde_json::to_string(&vault)
+        .map_err(|e| JsValue::from_str(&format!("serialisation error: {e}")))
+}
+
+/// Toggle a relay's enabled state in a vault (given as JSON). Returns the updated vault JSON.
+#[wasm_bindgen]
+pub fn toggle_relay_in_vault(
+    vault_json: &str,
+    url: &str,
+    enabled: bool,
+) -> Result<String, JsValue> {
+    let mut vault: Vault = serde_json::from_str(vault_json)
+        .map_err(|e| JsValue::from_str(&format!("invalid vault JSON: {e}")))?;
+
+    zvault_core::settings::set_relay_enabled(&mut vault.settings, url, enabled)
+        .map_err(|e| JsValue::from_str(&e))?;
+
+    vault.version += 1;
+    serde_json::to_string(&vault)
+        .map_err(|e| JsValue::from_str(&format!("serialisation error: {e}")))
+}
+
+/// Reset relays to defaults in a vault (given as JSON). Returns the updated vault JSON.
+#[wasm_bindgen]
+pub fn reset_relays_in_vault(vault_json: &str) -> Result<String, JsValue> {
+    let mut vault: Vault = serde_json::from_str(vault_json)
+        .map_err(|e| JsValue::from_str(&format!("invalid vault JSON: {e}")))?;
+
+    zvault_core::settings::reset_relays(&mut vault.settings);
+
+    vault.version += 1;
+    serde_json::to_string(&vault)
+        .map_err(|e| JsValue::from_str(&format!("serialisation error: {e}")))
+}
+
+/// Get the list of enabled relay URLs from a vault (given as JSON).
+#[wasm_bindgen]
+pub fn get_enabled_relays(vault_json: &str) -> Result<JsValue, JsValue> {
+    let vault: Vault = serde_json::from_str(vault_json)
+        .map_err(|e| JsValue::from_str(&format!("invalid vault JSON: {e}")))?;
+
+    let urls = zvault_core::settings::enabled_relay_urls(&vault.settings);
+    serde_wasm_bindgen::to_value(&urls)
+        .map_err(|e| JsValue::from_str(&format!("serialisation error: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

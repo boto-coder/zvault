@@ -546,6 +546,104 @@ fn rekey_vault(
     Ok(())
 }
 
+// ─── Relay settings commands ─────────────────────────────────────────────────
+
+/// Relay entry DTO for the frontend.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RelayEntryDto {
+    url: String,
+    enabled: bool,
+    added_at: String,
+}
+
+/// Get the current relay settings from the vault.
+#[tauri::command]
+fn get_relay_settings(state: State<'_, AppState>) -> Result<Vec<RelayEntryDto>, String> {
+    let session = state.session.lock().map_err(|e| e.to_string())?;
+    let session = session.as_ref().ok_or("Vault is locked")?;
+
+    Ok(session
+        .vault
+        .settings
+        .relays
+        .iter()
+        .map(|r| RelayEntryDto {
+            url: r.url.clone(),
+            enabled: r.enabled,
+            added_at: r.added_at.to_rfc3339(),
+        })
+        .collect())
+}
+
+/// Add a relay to the vault settings.
+#[tauri::command]
+fn add_relay(url: String, state: State<'_, AppState>) -> Result<(), String> {
+    let mut session = state.session.lock().map_err(|e| e.to_string())?;
+    let session = session.as_mut().ok_or("Vault is locked")?;
+
+    zvault_core::settings::add_relay(&mut session.vault.settings, &url)?;
+    session.vault.version += 1;
+    session.vault.updated_at = chrono::Utc::now();
+    session
+        .vault_file
+        .save(&session.key, &session.vault)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Remove a relay from the vault settings.
+#[tauri::command]
+fn remove_relay(url: String, state: State<'_, AppState>) -> Result<(), String> {
+    let mut session = state.session.lock().map_err(|e| e.to_string())?;
+    let session = session.as_mut().ok_or("Vault is locked")?;
+
+    zvault_core::settings::remove_relay(&mut session.vault.settings, &url)?;
+    session.vault.version += 1;
+    session.vault.updated_at = chrono::Utc::now();
+    session
+        .vault_file
+        .save(&session.key, &session.vault)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Toggle a relay's enabled state.
+#[tauri::command]
+fn toggle_relay(url: String, enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
+    let mut session = state.session.lock().map_err(|e| e.to_string())?;
+    let session = session.as_mut().ok_or("Vault is locked")?;
+
+    zvault_core::settings::set_relay_enabled(&mut session.vault.settings, &url, enabled)?;
+    session.vault.version += 1;
+    session.vault.updated_at = chrono::Utc::now();
+    session
+        .vault_file
+        .save(&session.key, &session.vault)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Reset relays to the default list.
+#[tauri::command]
+fn reset_relays(state: State<'_, AppState>) -> Result<(), String> {
+    let mut session = state.session.lock().map_err(|e| e.to_string())?;
+    let session = session.as_mut().ok_or("Vault is locked")?;
+
+    zvault_core::settings::reset_relays(&mut session.vault.settings);
+    session.vault.version += 1;
+    session.vault.updated_at = chrono::Utc::now();
+    session
+        .vault_file
+        .save(&session.key, &session.vault)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 // ─── TOTP commands ───────────────────────────────────────────────────────────
 
 /// Response from the TOTP generation command.
@@ -613,6 +711,11 @@ fn main() {
             admit_device,
             revoke_device,
             rekey_vault,
+            get_relay_settings,
+            add_relay,
+            remove_relay,
+            toggle_relay,
+            reset_relays,
             generate_totp,
             validate_totp_secret,
         ])
