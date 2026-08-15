@@ -344,8 +344,35 @@ pub fn admit_device_from_pairing(
     remote_pubkey: &str,
     label: &str,
 ) -> Result<String, JsValue> {
+    // Validate remote_pubkey: must be exactly 64 hex characters.
+    if remote_pubkey.len() != 64 || !remote_pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(JsValue::from_str(
+            "Invalid public key: must be 64 hex characters",
+        ));
+    }
+    // Validate label: must be non-empty after trimming.
+    if label.trim().is_empty() {
+        return Err(JsValue::from_str("Device label is required"));
+    }
+
     let mut vault: Vault = serde_json::from_str(vault_json)
         .map_err(|e| JsValue::from_str(&format!("invalid vault JSON: {e}")))?;
+
+    // Check for duplicate or revoked device with the same pubkey.
+    let normalized_pubkey = remote_pubkey.to_lowercase();
+    for existing in &vault.devices {
+        if existing.nostr_pubkey == normalized_pubkey {
+            if existing.revoked {
+                return Err(JsValue::from_str(
+                    "Device with this public key was previously revoked and cannot be re-admitted",
+                ));
+            } else {
+                return Err(JsValue::from_str(
+                    "Device with this public key is already admitted",
+                ));
+            }
+        }
+    }
 
     let device_id = uuid::Uuid::new_v4();
     let added_by = vault
@@ -356,7 +383,7 @@ pub fn admit_device_from_pairing(
 
     let entry = zvault_core::vault::DeviceEntry {
         device_id,
-        nostr_pubkey: remote_pubkey.to_lowercase(),
+        nostr_pubkey: normalized_pubkey,
         label: label.trim().to_string(),
         added_at: chrono::Utc::now(),
         added_by,

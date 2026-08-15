@@ -1582,6 +1582,18 @@ fn cmd_pair_import(vault_path: PathBuf, code: String, yes: bool) -> Result<()> {
             password.zeroize();
             let (vf, key, mut vault) = result?;
 
+            // Check for duplicate or revoked device with the same pubkey.
+            let normalized_pubkey = payload.p.to_lowercase();
+            for existing in &vault.devices {
+                if existing.nostr_pubkey == normalized_pubkey {
+                    if existing.revoked {
+                        bail!("Device with this public key was previously revoked and cannot be re-admitted");
+                    } else {
+                        bail!("Device with this public key is already admitted");
+                    }
+                }
+            }
+
             // Admit the remote device.
             let now = chrono::Utc::now();
             let device_id = Uuid::new_v4();
@@ -1593,7 +1605,7 @@ fn cmd_pair_import(vault_path: PathBuf, code: String, yes: bool) -> Result<()> {
 
             let entry = zvault_core::vault::DeviceEntry {
                 device_id,
-                nostr_pubkey: payload.p.clone(),
+                nostr_pubkey: normalized_pubkey,
                 label: payload.l.clone(),
                 added_at: now,
                 added_by,
@@ -1645,6 +1657,18 @@ fn cmd_pair_import(vault_path: PathBuf, code: String, yes: bool) -> Result<()> {
             password.zeroize();
             let (vf, key, mut vault) = result?;
 
+            // Check for duplicate or revoked device with the same pubkey.
+            let normalized_pubkey = payload.p.to_lowercase();
+            for existing in &vault.devices {
+                if existing.nostr_pubkey == normalized_pubkey {
+                    if existing.revoked {
+                        bail!("Device with this public key was previously revoked and cannot be re-admitted");
+                    } else {
+                        bail!("Device with this public key is already admitted");
+                    }
+                }
+            }
+
             let now = chrono::Utc::now();
             let device_id = Uuid::new_v4();
             let added_by = vault
@@ -1655,7 +1679,7 @@ fn cmd_pair_import(vault_path: PathBuf, code: String, yes: bool) -> Result<()> {
 
             let entry = zvault_core::vault::DeviceEntry {
                 device_id,
-                nostr_pubkey: payload.p.clone(),
+                nostr_pubkey: normalized_pubkey,
                 label: payload.l.clone(),
                 added_at: now,
                 added_by,

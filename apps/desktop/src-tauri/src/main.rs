@@ -642,6 +642,8 @@ fn reset_relays(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
 // ─── Device key display/export commands ──────────────────────────────────────
 
 /// Device public key information.
@@ -893,8 +895,32 @@ fn confirm_pairing(
     pairing_type: String,
     state: State<'_, AppState>,
 ) -> Result<Option<PairingCodeResult>, String> {
+    // Validate pubkey_hex: must be exactly 64 hex characters.
+    if pubkey_hex.len() != 64 || !pubkey_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("Invalid public key: must be 64 hex characters".into());
+    }
+    // Validate label: must be non-empty.
+    if label.trim().is_empty() {
+        return Err("Device label is required".into());
+    }
+
     let mut session = state.session.lock().map_err(|e| e.to_string())?;
     let session = session.as_mut().ok_or("Vault is locked")?;
+
+    // Check for duplicate or revoked device with the same pubkey.
+    let normalized_pubkey = pubkey_hex.to_lowercase();
+    for existing in &session.vault.devices {
+        if existing.nostr_pubkey == normalized_pubkey {
+            if existing.revoked {
+                return Err(
+                    "Device with this public key was previously revoked and cannot be re-admitted"
+                        .into(),
+                );
+            } else {
+                return Err("Device with this public key is already admitted".into());
+            }
+        }
+    }
 
     // Admit the remote device.
     let device_id = Uuid::new_v4();
@@ -907,7 +933,7 @@ fn confirm_pairing(
 
     let entry = zvault_core::vault::DeviceEntry {
         device_id,
-        nostr_pubkey: pubkey_hex.to_lowercase(),
+        nostr_pubkey: normalized_pubkey,
         label: label.trim().to_string(),
         added_at: chrono::Utc::now(),
         added_by,

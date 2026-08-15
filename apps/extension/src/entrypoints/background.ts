@@ -254,6 +254,7 @@ export default defineBackground(() => {
         } catch (err) {
           return { error: String(err) };
         }
+      }
       case "GET_DEVICE_PUBKEY": {
         if (!sessionVaultJson) return { error: "Vault is locked" };
         const vault = JSON.parse(sessionVaultJson);
@@ -363,6 +364,29 @@ export default defineBackground(() => {
           label: string;
           pairingType: string;
         };
+
+        // Validate inputs
+        if (!/^[0-9a-f]{64}$/i.test(pairPubkey)) {
+          return { error: "Invalid public key: must be 64 hex characters" };
+        }
+        if (!pairLabel || !pairLabel.trim()) {
+          return { error: "Device label is required" };
+        }
+
+        // Check for duplicate or revoked device with same pubkey.
+        const currentVault = JSON.parse(sessionVaultJson);
+        const normalizedPubkey = pairPubkey.toLowerCase();
+        const existingDevice = (currentVault.devices || []).find(
+          (d: { nostr_pubkey: string }) => d.nostr_pubkey === normalizedPubkey
+        );
+        if (existingDevice) {
+          if (existingDevice.revoked) {
+            return { error: "Device with this public key was previously revoked and cannot be re-admitted" };
+          } else {
+            return { error: "Device with this public key is already admitted" };
+          }
+        }
+
         const { initWasm: initWasmConfirm } = await import("../lib/wasm");
         const wasmConfirm = await initWasmConfirm();
         try {
@@ -381,7 +405,7 @@ export default defineBackground(() => {
             const vault = JSON.parse(sessionVaultJson);
             const myDevice = vault.devices?.find(
               (d: { revoked?: boolean; nostr_pubkey: string }) =>
-                !d.revoked && d.nostr_pubkey !== pairPubkey.toLowerCase()
+                !d.revoked && d.nostr_pubkey !== normalizedPubkey
             );
             if (myDevice) {
               const vaultId = vault.vault_id || vault.id;
