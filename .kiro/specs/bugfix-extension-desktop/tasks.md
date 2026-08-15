@@ -6,31 +6,31 @@ Fix two blocking bugs: (1) the WASM `add_item` function requires a full `VaultIt
 
 ## Tasks
 
-- [ ] 1. Fix WASM `add_item` to accept input without `id`
-  - [ ] 1.1 Create `AddItemInput` struct in `crates/zvault-wasm/src/lib.rs`
+- [x] 1. Fix WASM `add_item` to accept input without `id`
+  - [x] 1.1 Create `AddItemInput` struct in `crates/zvault-wasm/src/lib.rs`
     - Fields: `kind`, `name`, `username?`, `password?`, `totp_secret?`, `uris?`, `note?`, `card_number?`, `expiry?`, `cvv?`, `cardholder?`, `first_name?`, `last_name?`, `email?`, `phone?`, `address?`, `city?`, `country?`, `favourite?`
     - All optional fields use `Option<T>` with `#[serde(default)]`
     - No `id`, `created_at`, or `updated_at` — these are generated server-side
     - _Bug 1_
 
-  - [ ] 1.2 Update `add_item` WASM function to use `AddItemInput`
+  - [x] 1.2 Update `add_item` WASM function to use `AddItemInput`
     - Deserialize `item_json` into `AddItemInput` instead of `VaultItem`
     - Construct a `VaultItem` from the input with `id: Uuid::new_v4()`, `created_at: Utc::now()`, `updated_at: Utc::now()`
     - Call `vault.add_item(item)` as before
     - Increment `vault.version` and update `vault.updated_at`
     - _Bug 1_
 
-  - [ ] 1.3 Write a test for `add_item` with a payload missing `id`
+  - [x] 1.3 Write a test for `add_item` with a payload missing `id`
     - Create a vault JSON, call `add_item` with `{"kind":"login","name":"Test","password":"pw"}`
     - Assert it succeeds and the returned vault JSON contains the new item with a generated UUID
     - _Bug 1_
 
-- [ ] 2. Checkpoint: WASM build + tests pass
+- [x] 2. Checkpoint: WASM build + tests pass
   - `cargo build -p zvault-wasm`
   - `cargo test --workspace --all-features`
 
-- [ ] 3. Fix pairing flow to auto-initialize device identity
-  - [ ] 3.1 Desktop Tauri: auto-init device in `create_invite_code` and `create_join_request_code`
+- [x] 3. Fix pairing flow to auto-initialize device identity
+  - [x] 3.1 Desktop Tauri: auto-init device in `create_invite_code` and `create_join_request_code`
     - If `vault.devices` is empty (no active non-revoked device):
       - Generate a secp256k1 keypair (same logic as `init_device`)
       - Create a `DeviceEntry` with label "Desktop" (or derive from hostname)
@@ -38,7 +38,7 @@ Fix two blocking bugs: (1) the WASM `add_item` function requires a full `VaultIt
       - Then proceed with the pairing code generation
     - _Bug 2_
 
-  - [ ] 3.2 Extension background: auto-init device in `CREATE_INVITE_CODE` and `CREATE_JOIN_REQUEST_CODE`
+  - [x] 3.2 Extension background: auto-init device in `CREATE_INVITE_CODE` and `CREATE_JOIN_REQUEST_CODE`
     - If no active device found in vault:
       - Call the existing `INIT_DEVICE` logic (generate keypair via WASM, store in extension storage, add to vault)
       - Use label "Browser Extension" as default
@@ -46,21 +46,21 @@ Fix two blocking bugs: (1) the WASM `add_item` function requires a full `VaultIt
       - Then proceed with pairing code generation
     - _Bug 2_
 
-  - [ ] 3.3 Ensure auto-init is idempotent
+  - [x] 3.3 Ensure auto-init is idempotent
     - If a device already exists, the pairing flow proceeds as before (no re-init)
     - If the auto-init succeeds, subsequent calls find the device and skip init
     - _Bug 2_
 
-- [ ] 4. Checkpoint: Desktop + extension build
+- [x] 4. Checkpoint: Desktop + extension build
   - `cargo build --workspace`
   - Extension TypeScript check
 
-- [ ] 5. Regression tests
-  - [ ] 5.1 Test: add_item with minimal JSON (just kind + name) succeeds
-  - [ ] 5.2 Test: add_item with full JSON (all fields including uris array) succeeds
-  - [ ] 5.3 Test: pairing code generation on empty vault auto-creates device identity
+- [x] 5. Regression tests
+  - [x] 5.1 Test: add_item with minimal JSON (just kind + name) succeeds
+  - [x] 5.2 Test: add_item with full JSON (all fields including uris array) succeeds
+  - [x] 5.3 Test: pairing code generation on empty vault auto-creates device identity
 
-- [ ] 6. Final verification
+- [x] 6. Final verification
   - `cargo build --workspace`
   - `cargo test --workspace --all-features`
   - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
