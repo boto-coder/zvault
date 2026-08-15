@@ -16,6 +16,7 @@ export interface ZVaultWasm {
   add_item(vault_json: string, item_json: string): string;
   list_items(vault_json: string): unknown[];
   generate_totp(secret: string): string;
+  generate_password(length?: number): string;
 }
 
 let wasmInstance: ZVaultWasm | null = null;
@@ -71,6 +72,7 @@ export async function initWasm(): Promise<ZVaultWasm> {
     add_item: glueModule.add_item as ZVaultWasm["add_item"],
     list_items: glueModule.list_items as ZVaultWasm["list_items"],
     generate_totp: glueModule.generate_totp as ZVaultWasm["generate_totp"],
+    generate_password: glueModule.generate_password as ZVaultWasm["generate_password"],
   };
 
   return wasmInstance;

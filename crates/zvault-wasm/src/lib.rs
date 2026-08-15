@@ -7,6 +7,69 @@ use wasm_bindgen::prelude::*;
 use zvault_core::crypto::{decrypt, derive_key, encrypt_with_params, parse_kdf_params, KdfParams};
 use zvault_core::vault::{Vault, VaultItem};
 
+/// Generate a cryptographically random password.
+///
+/// Guarantees at least one character from each of four classes:
+/// uppercase (A-Z), lowercase (a-z), digit (0-9), special.
+///
+/// `length` defaults to 20 if `None`. Returns an error if length < 4.
+#[wasm_bindgen]
+pub fn generate_password(length: Option<u32>) -> Result<String, JsValue> {
+    generate_password_inner(length).map_err(|e| JsValue::from_str(&e))
+}
+
+/// Inner implementation of password generation, testable on all targets.
+fn generate_password_inner(length: Option<u32>) -> Result<String, String> {
+    let len = length.unwrap_or(20) as usize;
+    if len < 4 {
+        return Err(
+            "Password length must be at least 4 to include all character classes".to_string(),
+        );
+    }
+
+    const UPPERCASE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const LOWERCASE: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
+    const DIGITS: &[u8] = b"0123456789";
+    const SPECIAL: &[u8] = b"!@#$%^&*()_+-=[]{}|;:,.<>?";
+
+    let all_chars: Vec<u8> = [UPPERCASE, LOWERCASE, DIGITS, SPECIAL].concat();
+
+    // We need `len` random bytes for character selection + `len * 4` bytes for
+    // Fisher-Yates shuffle (using u32 per position).
+    let random_bytes_needed = len + len * 4;
+    let mut random_buf = vec![0u8; random_bytes_needed];
+    getrandom::getrandom(&mut random_buf).map_err(|e| format!("RNG error: {e}"))?;
+
+    let mut password = Vec::with_capacity(len);
+    let mut rng_offset = 0;
+
+    // Guarantee one character from each class
+    let classes: &[&[u8]] = &[UPPERCASE, LOWERCASE, DIGITS, SPECIAL];
+    for class in classes {
+        let idx = random_buf[rng_offset] as usize % class.len();
+        rng_offset += 1;
+        password.push(class[idx]);
+    }
+
+    // Fill remaining positions from the combined character set
+    for _ in 4..len {
+        let idx = random_buf[rng_offset] as usize % all_chars.len();
+        rng_offset += 1;
+        password.push(all_chars[idx]);
+    }
+
+    // Fisher-Yates shuffle using remaining random bytes (4 bytes per position for u32)
+    for i in (1..len).rev() {
+        let r_bytes = &random_buf[rng_offset..rng_offset + 4];
+        rng_offset += 4;
+        let r = u32::from_le_bytes([r_bytes[0], r_bytes[1], r_bytes[2], r_bytes[3]]);
+        let j = (r as usize) % (i + 1);
+        password.swap(i, j);
+    }
+
+    String::from_utf8(password).map_err(|e| format!("UTF-8 error: {e}"))
+}
+
 /// Create a new empty vault, encrypt it with the given password, and return the
 /// encrypted bytes as a `Uint8Array`.
 ///
@@ -102,4 +165,90 @@ pub fn generate_totp(secret: &str) -> Result<String, JsValue> {
 
     let time = js_sys::Date::now() as u64 / 1000;
     Ok(totp.generate(time))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const UPPERCASE: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const LOWERCASE: &str = "abcdefghijklmnopqrstuvwxyz";
+    const DIGITS: &str = "0123456789";
+    const SPECIAL: &str = "!@#$%^&*()_+-=[]{}|;:,.<>?";
+
+    #[test]
+    fn test_generate_password_default_length() {
+        let result = generate_password_inner(None);
+        assert!(result.is_ok());
+        let pw = result.unwrap();
+        assert_eq!(pw.len(), 20);
+    }
+
+    #[test]
+    fn test_generate_password_custom_length() {
+        for len in [4, 8, 16, 32, 64, 128] {
+            let result = generate_password_inner(Some(len));
+            assert!(result.is_ok());
+            let pw = result.unwrap();
+            assert_eq!(pw.len(), len as usize);
+        }
+    }
+
+    #[test]
+    fn test_generate_password_character_class_coverage() {
+        // Run multiple times to verify the guarantee holds
+        for _ in 0..50 {
+            let pw = generate_password_inner(Some(4)).unwrap();
+            assert!(
+                pw.chars().any(|c| UPPERCASE.contains(c)),
+                "Missing uppercase in: {pw}"
+            );
+            assert!(
+                pw.chars().any(|c| LOWERCASE.contains(c)),
+                "Missing lowercase in: {pw}"
+            );
+            assert!(
+                pw.chars().any(|c| DIGITS.contains(c)),
+                "Missing digit in: {pw}"
+            );
+            assert!(
+                pw.chars().any(|c| SPECIAL.contains(c)),
+                "Missing special in: {pw}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_generate_password_longer_lengths_have_all_classes() {
+        for len in [10, 20, 50, 100] {
+            let pw = generate_password_inner(Some(len)).unwrap();
+            assert_eq!(pw.len(), len as usize);
+            assert!(pw.chars().any(|c| UPPERCASE.contains(c)));
+            assert!(pw.chars().any(|c| LOWERCASE.contains(c)));
+            assert!(pw.chars().any(|c| DIGITS.contains(c)));
+            assert!(pw.chars().any(|c| SPECIAL.contains(c)));
+        }
+    }
+
+    #[test]
+    fn test_generate_password_rejects_length_below_4() {
+        for len in [0, 1, 2, 3] {
+            let result = generate_password_inner(Some(len));
+            assert!(result.is_err(), "Should reject length {len}");
+        }
+    }
+
+    #[test]
+    fn test_generate_password_only_valid_characters() {
+        let valid: String = format!("{UPPERCASE}{LOWERCASE}{DIGITS}{SPECIAL}");
+        for _ in 0..20 {
+            let pw = generate_password_inner(Some(30)).unwrap();
+            for c in pw.chars() {
+                assert!(
+                    valid.contains(c),
+                    "Invalid character '{c}' in password: {pw}"
+                );
+            }
+        }
+    }
 }
