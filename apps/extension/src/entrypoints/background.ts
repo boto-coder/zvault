@@ -254,6 +254,8 @@ export default defineBackground(() => {
         } catch (err) {
           return { error: String(err) };
         }
+      }
+
       case "GET_DEVICE_PUBKEY": {
         if (!sessionVaultJson) return { error: "Vault is locked" };
         const vault = JSON.parse(sessionVaultJson);

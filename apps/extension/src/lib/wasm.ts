@@ -23,6 +23,7 @@ export interface ZVaultWasm {
   toggle_relay_in_vault(vault_json: string, url: string, enabled: boolean): string;
   reset_relays_in_vault(vault_json: string): string;
   get_enabled_relays(vault_json: string): string[];
+  encode_npub_from_hex(pubkey_hex: string): string;
 }
 
 let wasmInstance: ZVaultWasm | null = null;
@@ -85,6 +86,7 @@ export async function initWasm(): Promise<ZVaultWasm> {
     toggle_relay_in_vault: glueModule.toggle_relay_in_vault as ZVaultWasm["toggle_relay_in_vault"],
     reset_relays_in_vault: glueModule.reset_relays_in_vault as ZVaultWasm["reset_relays_in_vault"],
     get_enabled_relays: glueModule.get_enabled_relays as ZVaultWasm["get_enabled_relays"],
+    encode_npub_from_hex: glueModule.encode_npub_from_hex as ZVaultWasm["encode_npub_from_hex"],
   };
 
   return wasmInstance;

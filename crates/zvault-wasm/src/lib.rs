@@ -345,4 +345,65 @@ mod tests {
             }
         }
     }
+
+    /// Property: for any valid length in [4, 128], the generated password
+    /// has exactly that length AND contains all four character classes.
+    #[test]
+    fn test_generate_password_property_length_and_classes() {
+        for len in 4u32..=128 {
+            let pw = generate_password_inner(Some(len)).unwrap();
+            assert_eq!(
+                pw.len(),
+                len as usize,
+                "Length mismatch for requested {len}"
+            );
+            assert!(
+                pw.chars().any(|c| UPPERCASE.contains(c)),
+                "Missing uppercase for length {len}: {pw}"
+            );
+            assert!(
+                pw.chars().any(|c| LOWERCASE.contains(c)),
+                "Missing lowercase for length {len}: {pw}"
+            );
+            assert!(
+                pw.chars().any(|c| DIGITS.contains(c)),
+                "Missing digit for length {len}: {pw}"
+            );
+            assert!(
+                pw.chars().any(|c| SPECIAL.contains(c)),
+                "Missing special for length {len}: {pw}"
+            );
+        }
+    }
+
+    /// Property: passwords generated with the same parameters are different
+    /// (randomness check — extremely unlikely to collide for length >= 8).
+    #[test]
+    fn test_generate_password_property_uniqueness() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..100 {
+            let pw = generate_password_inner(Some(20)).unwrap();
+            seen.insert(pw);
+        }
+        // With 20-char passwords from ~90 chars, collisions are astronomically unlikely
+        assert!(
+            seen.len() >= 99,
+            "Too many collisions: only {} unique passwords out of 100",
+            seen.len()
+        );
+    }
+
+    /// Property: generate_password always returns valid UTF-8 (implied by
+    /// the character sets being ASCII, but verified explicitly).
+    #[test]
+    fn test_generate_password_property_valid_utf8() {
+        for len in [4, 10, 50, 128] {
+            for _ in 0..10 {
+                let pw = generate_password_inner(Some(len)).unwrap();
+                // If this were invalid UTF-8, from_utf8 inside the function
+                // would have returned Err. Double-check the string is valid.
+                assert!(pw.is_ascii(), "Password should be pure ASCII: {pw}");
+            }
+        }
+    }
 }
