@@ -10,6 +10,6 @@
     "isolatedModules": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", ".wxt/wxt.d.ts"],
   "exclude": ["node_modules"]
 }

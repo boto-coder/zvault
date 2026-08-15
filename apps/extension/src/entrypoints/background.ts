@@ -97,7 +97,24 @@ export default defineBackground(() => {
         await browser.storage.local.set({
           vault: Array.from(encrypted),
         });
+        // Fire-and-forget Nostr sync — never block the response
+        triggerNostrSync().catch((err) =>
+          console.warn("[ZVault] Nostr sync failed:", err)
+        );
         return { success: true };
+      }
+
+      case "GENERATE_PASSWORD": {
+        const { initWasm } = await import("../lib/wasm");
+        const wasm = await initWasm();
+        const reqLength = (message.payload as { length?: number } | undefined)
+          ?.length;
+        try {
+          const pw = wasm.generate_password(reqLength);
+          return { password: pw };
+        } catch (err) {
+          return { error: String(err) };
+        }
       }
 
       case "GENERATE_TOTP": {
@@ -133,4 +150,24 @@ export default defineBackground(() => {
       lock();
     }
   });
+
+  // ─── Nostr sync (fire-and-forget) ─────────────────────────────────────
+
+  /**
+   * Trigger a Nostr sync to propagate the latest vault state to connected devices.
+   * This is best-effort — sync failures are logged but never surfaced to the user
+   * during an add-item operation.
+   */
+  async function triggerNostrSync(): Promise<void> {
+    // TODO: Implement full NIP-44/NIP-59 sync when relay configuration is available.
+    // For now this is a no-op placeholder that will be wired up when the extension
+    // gains relay settings and device identity management.
+    //
+    // The implementation will:
+    // 1. Build a full sync message from the current vault state
+    // 2. NIP-44 encrypt it for each admitted device's public key
+    // 3. NIP-59 gift-wrap the sealed message
+    // 4. Publish to configured relays via WebSocket
+    console.debug("[ZVault] Nostr sync triggered (not yet wired to relays)");
+  }
 });
