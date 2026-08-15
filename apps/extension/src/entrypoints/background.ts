@@ -316,10 +316,20 @@ export default defineBackground(() => {
       }
 
       case "CREATE_INVITE_CODE": {
-        if (!sessionVaultJson) return { error: "Vault is locked" };
-        const vault = JSON.parse(sessionVaultJson);
-        const device = vault.devices?.find((d: { revoked?: boolean }) => !d.revoked);
-        if (!device) return { error: "No active device identity found" };
+        if (!sessionVaultJson || !sessionPassword) return { error: "Vault is locked" };
+        let vault = JSON.parse(sessionVaultJson);
+        let device = vault.devices?.find((d: { revoked?: boolean }) => !d.revoked);
+        if (!device) {
+          // Auto-initialize device identity for pairing.
+          const initResult = await autoInitDevice(vault);
+          vault = initResult.vault;
+          device = initResult.device;
+          sessionVaultJson = JSON.stringify(vault);
+          const { initWasm: initWasmInit } = await import("../lib/wasm");
+          const wasmInit = await initWasmInit();
+          const encryptedInit = wasmInit.encrypt_vault(sessionPassword, sessionVaultJson);
+          await browser.storage.local.set({ vault: Array.from(encryptedInit) });
+        }
         const { initWasm: initWasmPair } = await import("../lib/wasm");
         const wasmPair = await initWasmPair();
         try {
@@ -332,10 +342,20 @@ export default defineBackground(() => {
       }
 
       case "CREATE_JOIN_REQUEST_CODE": {
-        if (!sessionVaultJson) return { error: "Vault is locked" };
-        const vault = JSON.parse(sessionVaultJson);
-        const device = vault.devices?.find((d: { revoked?: boolean }) => !d.revoked);
-        if (!device) return { error: "No active device identity found" };
+        if (!sessionVaultJson || !sessionPassword) return { error: "Vault is locked" };
+        let vault = JSON.parse(sessionVaultJson);
+        let device = vault.devices?.find((d: { revoked?: boolean }) => !d.revoked);
+        if (!device) {
+          // Auto-initialize device identity for pairing.
+          const initResult = await autoInitDevice(vault);
+          vault = initResult.vault;
+          device = initResult.device;
+          sessionVaultJson = JSON.stringify(vault);
+          const { initWasm: initWasmInit } = await import("../lib/wasm");
+          const wasmInit = await initWasmInit();
+          const encryptedInit = wasmInit.encrypt_vault(sessionPassword, sessionVaultJson);
+          await browser.storage.local.set({ vault: Array.from(encryptedInit) });
+        }
         const { initWasm: initWasmJoin } = await import("../lib/wasm");
         const wasmJoin = await initWasmJoin();
         try {
@@ -435,6 +455,137 @@ export default defineBackground(() => {
       default:
         return { error: `Unknown message type: ${message.type}` };
     }
+  }
+
+  // ─── Auto-init device identity ──────────────────────────────────────
+
+  /**
+   * Auto-initialize a device identity when the vault has no active devices.
+   *
+   * Generates a secp256k1 keypair using the Web Crypto API (for randomness),
+   * stores the secret key in browser.storage.local, adds the public key as a
+   * DeviceEntry to the vault, and bumps the version.
+   */
+  async function autoInitDevice(vault: Record<string, unknown>): Promise<{
+    vault: Record<string, unknown>;
+    device: { device_id: string; nostr_pubkey: string; label: string; revoked: boolean };
+  }> {
+    // Generate 32 random bytes for secp256k1 secret key
+    const secretKeyBytes = new Uint8Array(32);
+    crypto.getRandomValues(secretKeyBytes);
+    const secretKeyHex = Array.from(secretKeyBytes)
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+
+    // Derive public key using the secp256k1 curve via WASM
+    // The WASM module doesn't expose key derivation directly, so we use
+    // a simplified approach: generate a keypair and store both parts.
+    // For the extension, we use the noble-secp256k1 algorithm inline.
+    const pubkeyHex = await deriveSecp256k1PubkeyHex(secretKeyBytes);
+
+    // Store secret key in browser.storage.local
+    await browser.storage.local.set({ device_secret_key_hex: secretKeyHex });
+
+    // Create device entry
+    const deviceId = crypto.randomUUID();
+    const device = {
+      device_id: deviceId,
+      nostr_pubkey: pubkeyHex,
+      label: "Browser Extension",
+      added_at: new Date().toISOString(),
+      added_by: deviceId,
+      revoked: false,
+      revoked_at: null,
+      revoked_by: null,
+    };
+
+    vault.devices = vault.devices || [];
+    (vault.devices as unknown[]).push(device);
+    vault.version = ((vault.version as number) || 0) + 1;
+    vault.updated_at = new Date().toISOString();
+
+    return { vault, device };
+  }
+
+  /**
+   * Derive secp256k1 x-only public key from a 32-byte secret key.
+   *
+   * This is a minimal implementation of secp256k1 scalar-to-point multiplication
+   * using the curve's generator point. We compute pubkey = secretKey * G and
+   * return the x-coordinate as a 64-char hex string (Nostr-style x-only pubkey).
+   */
+  async function deriveSecp256k1PubkeyHex(secretKey: Uint8Array): Promise<string> {
+    // secp256k1 parameters
+    const P = BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F");
+    const N = BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141");
+    const Gx = BigInt("0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798");
+    const Gy = BigInt("0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8");
+
+    // Convert secret key bytes to BigInt
+    let scalar = BigInt(0);
+    for (let i = 0; i < 32; i++) {
+      scalar = (scalar << BigInt(8)) | BigInt(secretKey[i]);
+    }
+    // Ensure scalar is valid (1 <= scalar < N)
+    scalar = ((scalar - BigInt(1)) % (N - BigInt(1))) + BigInt(1);
+
+    // Point multiplication using double-and-add
+    function modPow(base: bigint, exp: bigint, mod: bigint): bigint {
+      let result = BigInt(1);
+      base = ((base % mod) + mod) % mod;
+      while (exp > BigInt(0)) {
+        if (exp & BigInt(1)) {
+          result = (result * base) % mod;
+        }
+        exp >>= BigInt(1);
+        base = (base * base) % mod;
+      }
+      return result;
+    }
+
+    function modInverse(a: bigint, m: bigint): bigint {
+      return modPow(((a % m) + m) % m, m - BigInt(2), m);
+    }
+
+    type Point = { x: bigint; y: bigint } | null;
+
+    function pointAdd(p1: Point, p2: Point): Point {
+      if (!p1) return p2;
+      if (!p2) return p1;
+      if (p1.x === p2.x && p1.y === p2.y) {
+        // Point doubling
+        const s = (BigInt(3) * p1.x * p1.x * modInverse(BigInt(2) * p1.y, P)) % P;
+        const x3 = (((s * s - BigInt(2) * p1.x) % P) + P) % P;
+        const y3 = (((s * (p1.x - x3) - p1.y) % P) + P) % P;
+        return { x: x3, y: y3 };
+      }
+      if (p1.x === p2.x) return null; // Point at infinity
+      const s = ((p2.y - p1.y) * modInverse(((p2.x - p1.x) % P + P) % P, P)) % P;
+      const x3 = (((s * s - p1.x - p2.x) % P) + P) % P;
+      const y3 = (((s * (p1.x - x3) - p1.y) % P) + P) % P;
+      return { x: x3, y: y3 };
+    }
+
+    function scalarMul(k: bigint, point: Point): Point {
+      let result: Point = null;
+      let current = point;
+      let n = k;
+      while (n > BigInt(0)) {
+        if (n & BigInt(1)) {
+          result = pointAdd(result, current);
+        }
+        current = pointAdd(current, current);
+        n >>= BigInt(1);
+      }
+      return result;
+    }
+
+    const G: Point = { x: Gx, y: Gy };
+    const pubPoint = scalarMul(scalar, G);
+    if (!pubPoint) throw new Error("Invalid secret key: produces point at infinity");
+
+    // Return x-coordinate as 64-char hex (x-only / Nostr-style pubkey)
+    return pubPoint.x.toString(16).padStart(64, "0");
   }
 
   // ─── Auto-lock ─────────────────────────────────────────────────────────

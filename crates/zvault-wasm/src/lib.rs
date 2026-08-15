@@ -3,9 +3,143 @@
 //! Exposes a subset of zvault-core functionality to JavaScript via wasm-bindgen.
 //! Used by the ZVault browser extension for in-browser vault encryption/decryption.
 
+use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 use zvault_core::crypto::{decrypt, derive_key, encrypt_with_params, parse_kdf_params, KdfParams};
-use zvault_core::vault::{Vault, VaultItem};
+use zvault_core::vault::{IdentityFields, ItemKind, Uri, UriMatch, Vault, VaultItem};
+
+// ─── AddItemInput ────────────────────────────────────────────────────────────
+
+/// Input struct for adding a new item from the frontend.
+///
+/// The frontend sends partial JSON (no `id`, `created_at`, or `updated_at`).
+/// This struct deserializes that partial payload and constructs a full
+/// [`VaultItem`] with generated UUID and current timestamps.
+///
+/// Supports both camelCase and snake_case field names via serde aliases.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct AddItemInput {
+    kind: ItemKind,
+    name: String,
+
+    #[serde(default, alias = "folder")]
+    folder: Option<String>,
+
+    #[serde(default)]
+    favourite: bool,
+
+    // Login fields
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default, alias = "totpSecret")]
+    totp_secret: Option<String>,
+    #[serde(default)]
+    uris: Vec<AddItemUri>,
+
+    // SecureNote fields
+    #[serde(default)]
+    note: Option<String>,
+
+    // Card fields
+    #[serde(default, alias = "cardNumber")]
+    card_number: Option<String>,
+    #[serde(default)]
+    expiry: Option<String>,
+    #[serde(default)]
+    cvv: Option<String>,
+    #[serde(default)]
+    cardholder: Option<String>,
+
+    // Identity fields
+    #[serde(default)]
+    identity: Option<AddItemIdentity>,
+}
+
+/// URI input matching the frontend payload.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct AddItemUri {
+    uri: String,
+    #[serde(default = "default_uri_match", alias = "match")]
+    r#match: String,
+}
+
+fn default_uri_match() -> String {
+    "domain".to_string()
+}
+
+/// Identity fields input from the frontend.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct AddItemIdentity {
+    #[serde(default, alias = "firstName")]
+    first_name: Option<String>,
+    #[serde(default, alias = "lastName")]
+    last_name: Option<String>,
+    #[serde(default)]
+    address: Option<String>,
+    #[serde(default)]
+    city: Option<String>,
+    #[serde(default)]
+    country: Option<String>,
+    #[serde(default)]
+    phone: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+}
+
+impl AddItemInput {
+    /// Convert to a full [`VaultItem`] with generated UUID and current timestamps.
+    fn into_vault_item(self) -> VaultItem {
+        let mut item = VaultItem::new(self.kind, self.name);
+        item.favourite = self.favourite;
+        item.username = self.username;
+        item.password = self.password;
+        item.totp_secret = self.totp_secret;
+        item.note = self.note;
+        item.card_number = self.card_number;
+        item.expiry = self.expiry;
+        item.cvv = self.cvv;
+        item.cardholder = self.cardholder;
+
+        if let Some(folder_str) = self.folder {
+            item.folder = uuid::Uuid::parse_str(&folder_str).ok();
+        }
+
+        item.uris = self
+            .uris
+            .into_iter()
+            .map(|u| Uri {
+                uri: u.uri,
+                r#match: match u.r#match.as_str() {
+                    "host" => UriMatch::Host,
+                    "starts_with" | "startsWith" => UriMatch::StartsWith,
+                    "exact" => UriMatch::Exact,
+                    "regex" => UriMatch::Regex,
+                    "never" => UriMatch::Never,
+                    _ => UriMatch::Domain,
+                },
+            })
+            .collect();
+
+        if let Some(identity) = self.identity {
+            item.identity = Some(IdentityFields {
+                first_name: identity.first_name,
+                last_name: identity.last_name,
+                address: identity.address,
+                city: identity.city,
+                country: identity.country,
+                phone: identity.phone,
+                email: identity.email,
+            });
+        }
+
+        item
+    }
+}
 
 /// Generate a cryptographically random password.
 ///
@@ -123,7 +257,9 @@ pub fn encrypt_vault(password: &str, vault_json: &str) -> Result<Vec<u8>, JsValu
 /// Add a new item to a vault (given as JSON).
 ///
 /// `vault_json` is the current vault state as JSON.
-/// `item_json` is a JSON object describing the new item to add.
+/// `item_json` is a JSON object describing the new item to add. Does not
+/// require `id`, `created_at`, or `updated_at` — these are generated
+/// automatically.
 ///
 /// Returns the updated vault JSON string.
 #[wasm_bindgen]
@@ -131,9 +267,10 @@ pub fn add_item(vault_json: &str, item_json: &str) -> Result<String, JsValue> {
     let mut vault: Vault = serde_json::from_str(vault_json)
         .map_err(|e| JsValue::from_str(&format!("invalid vault JSON: {e}")))?;
 
-    let item: VaultItem = serde_json::from_str(item_json)
+    let input: AddItemInput = serde_json::from_str(item_json)
         .map_err(|e| JsValue::from_str(&format!("invalid item JSON: {e}")))?;
 
+    let item = input.into_vault_item();
     vault.add_item(item);
 
     serde_json::to_string(&vault)

@@ -194,6 +194,46 @@ fn build_vault_item(input: &ItemInput) -> Result<VaultItem, String> {
     Ok(item)
 }
 
+/// Auto-initialize a device identity when the vault has no active devices.
+///
+/// Generates a secp256k1 keypair, adds the public key as a DeviceEntry to the
+/// vault, and bumps the version. The secret key is not persisted (follow-up
+/// work for keychain storage). The invite/join-request code only needs the
+/// public key.
+fn auto_init_device(vault: &mut Vault) -> zvault_core::vault::DeviceEntry {
+    use aes_gcm::aead::OsRng as AeadOsRng;
+    use k256::ecdsa::SigningKey;
+
+    // Generate a fresh secp256k1 keypair.
+    let signing_key = SigningKey::random(&mut AeadOsRng);
+    let verifying_key = signing_key.verifying_key();
+
+    // Extract x-only public key (32 bytes) as hex.
+    let point = verifying_key.to_encoded_point(false);
+    let x_bytes = point.x().expect("invariant: non-identity point");
+    let pubkey_hex = hex::encode(x_bytes);
+
+    let device_id = Uuid::new_v4();
+    let now = chrono::Utc::now();
+
+    let entry = zvault_core::vault::DeviceEntry {
+        device_id,
+        nostr_pubkey: pubkey_hex,
+        label: "Desktop".to_string(),
+        added_at: now,
+        added_by: device_id,
+        revoked: false,
+        revoked_at: None,
+        revoked_by: None,
+    };
+
+    vault.devices.push(entry.clone());
+    vault.version += 1;
+    vault.updated_at = now;
+
+    entry
+}
+
 // ─── Tauri commands ──────────────────────────────────────────────────────────
 
 /// Create a new vault file at the given path.
@@ -823,16 +863,22 @@ struct PairingInfo {
 /// Create an invite code for this vault.
 #[tauri::command]
 fn create_invite_code(state: State<'_, AppState>) -> Result<PairingCodeResult, String> {
-    let session = state.session.lock().map_err(|e| e.to_string())?;
-    let session = session.as_ref().ok_or("Vault is locked")?;
+    let mut session = state.session.lock().map_err(|e| e.to_string())?;
+    let session = session.as_mut().ok_or("Vault is locked")?;
 
-    // Get the first active device as "this device".
-    let device = session
-        .vault
-        .devices
-        .iter()
-        .find(|d| !d.revoked)
-        .ok_or("No active device identity found")?;
+    // Get the first active device, or auto-initialize one if none exists.
+    let device = match session.vault.devices.iter().find(|d| !d.revoked) {
+        Some(d) => d.clone(),
+        None => {
+            // Auto-initialize a device identity for this desktop instance.
+            let entry = auto_init_device(&mut session.vault);
+            session
+                .vault_file
+                .save(&session.key, &session.vault)
+                .map_err(|e| e.to_string())?;
+            entry
+        }
+    };
 
     let payload = zvault_core::pairing::create_invite(
         &device.nostr_pubkey,
@@ -848,15 +894,21 @@ fn create_invite_code(state: State<'_, AppState>) -> Result<PairingCodeResult, S
 /// Create a join-request code for this device.
 #[tauri::command]
 fn create_join_request_code(state: State<'_, AppState>) -> Result<PairingCodeResult, String> {
-    let session = state.session.lock().map_err(|e| e.to_string())?;
-    let session = session.as_ref().ok_or("Vault is locked")?;
+    let mut session = state.session.lock().map_err(|e| e.to_string())?;
+    let session = session.as_mut().ok_or("Vault is locked")?;
 
-    let device = session
-        .vault
-        .devices
-        .iter()
-        .find(|d| !d.revoked)
-        .ok_or("No active device identity found")?;
+    // Get the first active device, or auto-initialize one if none exists.
+    let device = match session.vault.devices.iter().find(|d| !d.revoked) {
+        Some(d) => d.clone(),
+        None => {
+            let entry = auto_init_device(&mut session.vault);
+            session
+                .vault_file
+                .save(&session.key, &session.vault)
+                .map_err(|e| e.to_string())?;
+            entry
+        }
+    };
 
     let payload =
         zvault_core::pairing::create_join_request(&device.nostr_pubkey, &device.label)

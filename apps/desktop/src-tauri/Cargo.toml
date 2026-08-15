@@ -30,6 +30,9 @@ hex = "0.4"
 # AES-GCM for OsRng (rand_core 0.6 — see tech.md)
 aes-gcm = "0.10"
 
+# secp256k1 key generation for auto-init device identity
+k256 = { version = "0.13", features = ["ecdsa"] }
+
 # TOTP
 totp-rs = "5.6"
 
