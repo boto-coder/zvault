@@ -2441,6 +2441,7 @@ dependencies = [
  "clap",
  "rpassword",
  "serde_json",
+ "totp-rs",
  "uuid",
  "zeroize",
  "zvault-core",

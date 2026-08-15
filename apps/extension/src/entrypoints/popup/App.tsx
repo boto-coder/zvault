@@ -8,6 +8,7 @@ interface VaultItem {
   name: string;
   username?: string;
   uris?: { uri: string }[];
+  totp_secret?: string;
 }
 
 type View = "loading" | "create" | "unlock" | "items" | "create-item";
@@ -27,6 +28,7 @@ interface MessageResponse {
   data?: number[];
   password?: string;
   code?: string;
+  remainingSeconds?: number;
 }
 
 // ─── App ────────────────────────────────────────────────────────────────────
@@ -114,6 +116,19 @@ export function App() {
     }
   }
 
+  async function handleCopyTotp(itemId: string) {
+    const item = items.find((i) => i.id === itemId);
+    if (item && item.totp_secret) {
+      const response = (await browser.runtime.sendMessage({
+        type: "GENERATE_TOTP",
+        payload: { secret: item.totp_secret },
+      })) as MessageResponse;
+      if (response.code) {
+        await navigator.clipboard.writeText(response.code);
+      }
+    }
+  }
+
   switch (view) {
     case "loading":
       return <LoadingView />;
@@ -127,6 +142,7 @@ export function App() {
           items={items}
           onLock={handleLock}
           onCopyPassword={handleCopyPassword}
+          onCopyTotp={handleCopyTotp}
           onAdd={() => setView("create-item")}
         />
       );
@@ -364,11 +380,13 @@ function ItemListView({
   items,
   onLock,
   onCopyPassword,
+  onCopyTotp,
   onAdd,
 }: {
   items: VaultItem[];
   onLock: () => void;
   onCopyPassword: (id: string) => void;
+  onCopyTotp: (id: string) => void;
   onAdd: () => void;
 }) {
   return (
@@ -432,31 +450,62 @@ function ItemListView({
                 alignItems: "center",
               }}
             >
-              <div>
-                <div style={{ fontWeight: 500 }}>{item.name}</div>
-                {item.username && (
-                  <div style={{ fontSize: "0.8rem", color: "#888" }}>
-                    {item.username}
-                  </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                <div>
+                  <div style={{ fontWeight: 500 }}>{item.name}</div>
+                  {item.username && (
+                    <div style={{ fontSize: "0.8rem", color: "#888" }}>
+                      {item.username}
+                    </div>
+                  )}
+                </div>
+                {item.totp_secret && (
+                  <span
+                    title="TOTP configured"
+                    style={{ fontSize: "0.7rem", opacity: 0.7 }}
+                    aria-label="TOTP available"
+                  >
+                    🕐
+                  </span>
                 )}
               </div>
-              {item.kind === "login" && (
-                <button
-                  onClick={() => onCopyPassword(item.id)}
-                  title="Copy password"
-                  style={{
-                    padding: "0.25rem 0.5rem",
-                    borderRadius: "4px",
-                    border: "1px solid #444",
-                    background: "transparent",
-                    color: "#e0e0e0",
-                    cursor: "pointer",
-                    fontSize: "0.75rem",
-                  }}
-                >
-                  📋
-                </button>
-              )}
+              <div style={{ display: "flex", gap: "0.3rem" }}>
+                {item.totp_secret && (
+                  <button
+                    onClick={() => onCopyTotp(item.id)}
+                    title="Copy TOTP code"
+                    aria-label={`Copy TOTP code for ${item.name}`}
+                    style={{
+                      padding: "0.25rem 0.5rem",
+                      borderRadius: "4px",
+                      border: "1px solid #444",
+                      background: "transparent",
+                      color: "#e0e0e0",
+                      cursor: "pointer",
+                      fontSize: "0.75rem",
+                    }}
+                  >
+                    🕐
+                  </button>
+                )}
+                {item.kind === "login" && (
+                  <button
+                    onClick={() => onCopyPassword(item.id)}
+                    title="Copy password"
+                    style={{
+                      padding: "0.25rem 0.5rem",
+                      borderRadius: "4px",
+                      border: "1px solid #444",
+                      background: "transparent",
+                      color: "#e0e0e0",
+                      cursor: "pointer",
+                      fontSize: "0.75rem",
+                    }}
+                  >
+                    📋
+                  </button>
+                )}
+              </div>
             </li>
           ))}
         </ul>

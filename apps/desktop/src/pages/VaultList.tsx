@@ -45,9 +45,13 @@ function VaultList({ onSelectItem, onLocked }: Props) {
     }
   };
 
-  const handleAddItem = async (name: string, kind: string) => {
+  const handleAddItem = async (name: string, kind: string, totpSecret?: string) => {
     try {
-      const itemJson = JSON.stringify({ name, kind });
+      const payload: Record<string, unknown> = { name, kind };
+      if (totpSecret) {
+        payload.totpSecret = totpSecret;
+      }
+      const itemJson = JSON.stringify(payload);
       await invoke("add_item", { itemJson });
       setShowAdd(false);
       loadItems();
@@ -156,19 +160,36 @@ function VaultList({ onSelectItem, onLocked }: Props) {
 // ─── Add Item Modal ──────────────────────────────────────────────────────────
 
 interface AddItemModalProps {
-  onAdd: (name: string, kind: string) => void;
+  onAdd: (name: string, kind: string, totpSecret?: string) => void;
   onClose: () => void;
 }
 
 function AddItemModal({ onAdd, onClose }: AddItemModalProps) {
   const [name, setName] = useState("");
   const [kind, setKind] = useState("login");
+  const [totpSecret, setTotpSecret] = useState("");
+  const [totpError, setTotpError] = useState<string | null>(null);
+  const [validating, setValidating] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (name.trim()) {
-      onAdd(name.trim(), kind);
+    if (!name.trim()) return;
+
+    // Validate TOTP secret if provided
+    if (totpSecret.trim() && kind === "login") {
+      setValidating(true);
+      try {
+        await invoke("validate_totp_secret", { secret: totpSecret.trim() });
+        setTotpError(null);
+      } catch (err) {
+        setTotpError("Invalid TOTP secret (must be base32-encoded)");
+        setValidating(false);
+        return;
+      }
+      setValidating(false);
     }
+
+    onAdd(name.trim(), kind, totpSecret.trim() || undefined);
   };
 
   return (
@@ -215,6 +236,35 @@ function AddItemModal({ onAdd, onClose }: AddItemModalProps) {
               <option value="identity">Identity</option>
             </select>
           </div>
+          {kind === "login" && (
+            <div>
+              <label
+                htmlFor="item-totp"
+                className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+              >
+                TOTP Secret (optional)
+              </label>
+              <input
+                id="item-totp"
+                type="text"
+                value={totpSecret}
+                onChange={(e) => {
+                  setTotpSecret(e.target.value);
+                  if (totpError) setTotpError(null);
+                }}
+                placeholder="Base32-encoded secret"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-zvault-500 focus:border-transparent"
+              />
+              {totpError && (
+                <p
+                  className="mt-1 text-sm text-red-600 dark:text-red-400"
+                  role="alert"
+                >
+                  {totpError}
+                </p>
+              )}
+            </div>
+          )}
           <div className="flex gap-3 justify-end">
             <button
               type="button"
@@ -225,9 +275,10 @@ function AddItemModal({ onAdd, onClose }: AddItemModalProps) {
             </button>
             <button
               type="submit"
+              disabled={validating}
               className="px-4 py-2 text-sm bg-zvault-600 hover:bg-zvault-700 text-white rounded-lg transition-colors"
             >
-              Add
+              {validating ? "Validating…" : "Add"}
             </button>
           </div>
         </form>
