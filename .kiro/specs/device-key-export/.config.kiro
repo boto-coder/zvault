@@ -1,0 +1,5 @@
+{
+  "specId": "device-key-export",
+  "name": "Device Key Export & Display",
+  "description": "View and export device Nostr keys (npub/nsec) across CLI, desktop, and extension"
+}

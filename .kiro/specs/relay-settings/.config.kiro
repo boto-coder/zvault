@@ -1,0 +1,5 @@
+{
+  "specId": "relay-settings",
+  "name": "Nostr Relay Settings",
+  "description": "Default relays, settings model, CLI/UI management, and sync engine integration"
+}
