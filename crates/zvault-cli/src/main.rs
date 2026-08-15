@@ -10,7 +10,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 use zvault_core::vault::{ItemKind, VaultFile, VaultItem};
 
 // ─── CLI definition ──────────────────────────────────────────────────────────
@@ -209,6 +209,20 @@ enum DeviceAction {
         /// Human-readable label for this device.
         #[arg(long)]
         label: String,
+    },
+
+    /// Show this device's public identity (device ID, label, pubkey, npub).
+    Show {
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+    },
+
+    /// Export this device's secret key (nsec + hex). USE WITH CAUTION.
+    ExportKey {
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
     },
 }
 
@@ -1269,6 +1283,12 @@ struct CliDeviceFile {
     label: String,
 }
 
+impl Drop for CliDeviceFile {
+    fn drop(&mut self) {
+        self.secret_key_hex.zeroize();
+    }
+}
+
 fn device_sidecar_path(vault_path: &std::path::Path) -> PathBuf {
     let mut p = vault_path.as_os_str().to_os_string();
     p.push(".device");
@@ -1303,17 +1323,18 @@ fn cmd_device_init(vault_path: PathBuf, label: String) -> Result<()> {
     let sk_bytes = identity
         .load_secret_key(&storage)
         .map_err(|e| anyhow::anyhow!("failed to load secret key: {e}"))?;
-    let sk_hex = hex::encode(sk_bytes.as_slice());
+    let sk_hex = Zeroizing::new(hex::encode(sk_bytes.as_slice()));
 
     // Build the sidecar file content.
     let device_file = CliDeviceFile {
         device_id: material.device_id,
-        secret_key_hex: sk_hex,
+        secret_key_hex: (*sk_hex).clone(),
         pubkey_hex: material.pubkey_hex.clone(),
         label: label.clone(),
     };
-    let device_json =
-        serde_json::to_vec(&device_file).context("failed to serialise device file")?;
+    let device_json = Zeroizing::new(
+        serde_json::to_vec(&device_file).context("failed to serialise device file")?,
+    );
 
     // Encrypt the sidecar with the vault password.
     let (_, sidecar_key) = zvault_core::vault::VaultFile::create(&password, &sidecar)
@@ -1380,12 +1401,69 @@ fn load_device_identity(
     }
 
     let blob = std::fs::read(&sidecar).context("failed to read device sidecar file")?;
-    let plaintext = zvault_core::crypto::decrypt(vault_key, &blob)
-        .map_err(|e| anyhow::anyhow!("failed to decrypt device sidecar (wrong password?): {e}"))?;
+    let plaintext: Zeroizing<Vec<u8>> =
+        Zeroizing::new(zvault_core::crypto::decrypt(vault_key, &blob).map_err(|e| {
+            anyhow::anyhow!("failed to decrypt device sidecar (wrong password?): {e}")
+        })?);
 
     let device_file: CliDeviceFile =
         serde_json::from_slice(&plaintext).context("failed to parse device sidecar JSON")?;
     Ok(device_file)
+}
+
+fn cmd_device_show(vault_path: PathBuf) -> Result<()> {
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (_vf, key, _vault) = result?;
+
+    let device = load_device_identity(&vault_path, &key)?;
+
+    // Compute npub from the public key
+    let pubkey_bytes =
+        hex::decode(&device.pubkey_hex).context("invalid public key hex in device sidecar")?;
+    let pubkey_array: [u8; 32] = pubkey_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("public key is not 32 bytes"))?;
+    let npub = zvault_core::nip19::encode_npub(&pubkey_array);
+
+    println!("Device Identity");
+    println!("───────────────");
+    println!("  Device ID:  {}", device.device_id);
+    println!("  Label:      {}", device.label);
+    println!("  Public key: {}", device.pubkey_hex);
+    println!("  npub:       {npub}");
+
+    Ok(())
+}
+
+fn cmd_device_export_key(vault_path: PathBuf) -> Result<()> {
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (_vf, key, _vault) = result?;
+
+    let device = load_device_identity(&vault_path, &key)?;
+
+    // Decode the secret key hex
+    let sk_bytes =
+        hex::decode(&device.secret_key_hex).context("invalid secret key hex in device sidecar")?;
+    let sk_array: [u8; 32] = sk_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("secret key is not 32 bytes"))?;
+    let nsec = zvault_core::nip19::encode_nsec(&sk_array);
+
+    eprintln!("⚠️  WARNING: This displays your device secret key.");
+    eprintln!("⚠️  Anyone with this key can impersonate your device.");
+    eprintln!("⚠️  Never share this key. Store it securely if backing up.");
+    eprintln!();
+
+    println!("Device Secret Key");
+    println!("─────────────────");
+    println!("  nsec: {}", *nsec);
+    println!("  hex:  {}", device.secret_key_hex);
+
+    Ok(())
 }
 
 // ─── Sync Commands ───────────────────────────────────────────────────────────
@@ -1415,8 +1493,9 @@ fn cmd_sync_send(
 
     // Load device identity.
     let device = load_device_identity(&vault_path, &key)?;
-    let sk_bytes =
-        hex::decode(&device.secret_key_hex).context("invalid secret key hex in device sidecar")?;
+    let sk_bytes = Zeroizing::new(
+        hex::decode(&device.secret_key_hex).context("invalid secret key hex in device sidecar")?,
+    );
 
     // Build the sync message.
     let mut clock = zvault_core::sync::LamportClock::new();
@@ -1433,9 +1512,8 @@ fn cmd_sync_send(
     let sync_json = serde_json::to_string(&sync_msg).context("failed to serialise sync message")?;
 
     // Gift-wrap the sync message.
-    let sk_vec = zeroize::Zeroizing::new(sk_bytes.clone());
     let gift_wrapped = zvault_core::nostr::gift_wrap(
-        &sk_vec,
+        &sk_bytes,
         &recipient_pubkey,
         &sync_json,
         21059, // custom kind for zvault sync (inside the gift wrap — relay sees 1059)
@@ -1487,9 +1565,9 @@ fn cmd_sync_receive(
 
     // Load device identity.
     let device = load_device_identity(&vault_path, &key)?;
-    let sk_bytes =
-        hex::decode(&device.secret_key_hex).context("invalid secret key hex in device sidecar")?;
-    let sk_vec = zeroize::Zeroizing::new(sk_bytes.clone());
+    let sk_bytes = Zeroizing::new(
+        hex::decode(&device.secret_key_hex).context("invalid secret key hex in device sidecar")?,
+    );
 
     let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
     let messages_applied = rt.block_on(async {
@@ -1516,7 +1594,7 @@ fn cmd_sync_receive(
             match tokio::time::timeout(timeout, rx.recv()).await {
                 Ok(Some(event)) => {
                     // Try to unwrap the gift-wrap.
-                    match zvault_core::nostr::unwrap_gift_wrap(&sk_vec, &event) {
+                    match zvault_core::nostr::unwrap_gift_wrap(&sk_bytes, &event) {
                         Ok(rumor) => {
                             // Parse the inner content as a SyncMessage.
                             match serde_json::from_str::<zvault_core::sync::SyncMessage>(
@@ -1811,6 +1889,8 @@ fn main() -> Result<()> {
             } => cmd_device_admit(vault, label, pubkey),
             DeviceAction::Revoke { vault, id } => cmd_device_revoke(vault, id),
             DeviceAction::Init { vault, label } => cmd_device_init(vault, label),
+            DeviceAction::Show { vault } => cmd_device_show(vault),
+            DeviceAction::ExportKey { vault } => cmd_device_export_key(vault),
         },
         Commands::Sync { action } => match action {
             SyncAction::Send {

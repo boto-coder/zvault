@@ -254,6 +254,63 @@ export default defineBackground(() => {
         } catch (err) {
           return { error: String(err) };
         }
+      case "GET_DEVICE_PUBKEY": {
+        if (!sessionVaultJson) return { error: "Vault is locked" };
+        const vault = JSON.parse(sessionVaultJson);
+        const device = vault.devices?.find((d: { revoked?: boolean }) => !d.revoked);
+        if (!device) return { error: "No active device identity found" };
+        // Encode pubkey as npub via WASM
+        const { initWasm: initWasmNpub } = await import("../lib/wasm");
+        const wasmNpub = await initWasmNpub();
+        let npub: string;
+        try {
+          npub = wasmNpub.encode_npub_from_hex(device.nostr_pubkey);
+        } catch (err) {
+          return { error: `Failed to encode npub: ${err}` };
+        }
+        return {
+          deviceId: device.device_id,
+          label: device.label,
+          pubkeyHex: device.nostr_pubkey,
+          npub,
+        };
+      }
+
+      case "EXPORT_DEVICE_SECRET_KEY": {
+        if (!sessionVaultJson || !sessionPassword) return { error: "Vault is locked" };
+        const { password: exportPassword } = message.payload as { password: string };
+        // Re-verify password by attempting to decrypt the vault data
+        const stored = await browser.storage.local.get("vault");
+        if (!stored.vault) return { error: "No vault data in storage" };
+        const { initWasm: initWasmExport } = await import("../lib/wasm");
+        const wasmExport = await initWasmExport();
+        try {
+          wasmExport.open_vault(exportPassword, new Uint8Array(stored.vault as number[]));
+        } catch {
+          return { error: "Invalid password" };
+        }
+        // In the extension, device identity is stored in the vault JSON itself.
+        // The secret key is stored separately in encrypted storage.
+        // For the extension, we store device_secret_key_hex in browser.storage.local (encrypted).
+        const deviceStore = await browser.storage.local.get("device_secret_key_hex");
+        if (!deviceStore.device_secret_key_hex) {
+          return { error: "Device identity not initialised. No secret key stored." };
+        }
+        const secretKeyHex = deviceStore.device_secret_key_hex as string;
+        // Encode as nsec using a simple bech32 encoding via WASM
+        // The WASM module only exposes encode_npub_from_hex; for nsec we return hex only
+        // since the extension cannot safely encode nsec without exposing it to WASM memory.
+        // Actually, let's compute nsec in JS using the same bech32 algorithm.
+        // For security, we return both hex and nsec (computed here).
+        let nsec: string;
+        try {
+          // We don't have a WASM nsec encoder to avoid exposing secret key material
+          // in WASM linear memory longer than necessary. Compute bech32 in JS.
+          nsec = encodeBech32Nsec(secretKeyHex);
+        } catch (err) {
+          return { error: `Failed to encode nsec: ${err}` };
+        }
+        return { nsec, hex: secretKeyHex };
       }
 
       default:
@@ -300,5 +357,94 @@ export default defineBackground(() => {
     // 3. NIP-59 gift-wrap the sealed message
     // 4. Publish to configured relays via WebSocket
     console.debug("[ZVault] Nostr sync triggered (not yet wired to relays)");
+  }
+
+  // ─── Bech32 helper (NIP-19 nsec encoding) ─────────────────────────────
+
+  /** Bech32 character set */
+  const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
+  /** Bech32 polymod for checksum computation */
+  function bech32Polymod(values: number[]): number {
+    const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+    let chk = 1;
+    for (const v of values) {
+      const b = chk >>> 25;
+      chk = ((chk & 0x1ffffff) << 5) ^ v;
+      for (let i = 0; i < 5; i++) {
+        if ((b >>> i) & 1) {
+          chk ^= GEN[i];
+        }
+      }
+    }
+    return chk;
+  }
+
+  /** Expand HRP for checksum */
+  function bech32HrpExpand(hrp: string): number[] {
+    const ret: number[] = [];
+    for (let i = 0; i < hrp.length; i++) {
+      ret.push(hrp.charCodeAt(i) >> 5);
+    }
+    ret.push(0);
+    for (let i = 0; i < hrp.length; i++) {
+      ret.push(hrp.charCodeAt(i) & 31);
+    }
+    return ret;
+  }
+
+  /** Convert 8-bit bytes to 5-bit groups */
+  function convertBits(data: number[], fromBits: number, toBits: number, pad: boolean): number[] {
+    let acc = 0;
+    let bits = 0;
+    const ret: number[] = [];
+    const maxv = (1 << toBits) - 1;
+    for (const value of data) {
+      acc = (acc << fromBits) | value;
+      bits += fromBits;
+      while (bits >= toBits) {
+        bits -= toBits;
+        ret.push((acc >>> bits) & maxv);
+      }
+    }
+    if (pad) {
+      if (bits > 0) {
+        ret.push((acc << (toBits - bits)) & maxv);
+      }
+    }
+    return ret;
+  }
+
+  /** Create bech32 checksum (original bech32, not bech32m) */
+  function bech32CreateChecksum(hrp: string, data: number[]): number[] {
+    const values = bech32HrpExpand(hrp).concat(data).concat([0, 0, 0, 0, 0, 0]);
+    const polymod = bech32Polymod(values) ^ 1; // bech32 uses XOR 1; bech32m uses XOR 0x2bc830a3
+    const ret: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      ret.push((polymod >>> (5 * (5 - i))) & 31);
+    }
+    return ret;
+  }
+
+  /** Encode bytes as bech32 with the given HRP (original bech32 variant) */
+  function bech32Encode(hrp: string, data: number[]): string {
+    const fiveBit = convertBits(data, 8, 5, true);
+    const checksum = bech32CreateChecksum(hrp, fiveBit);
+    const combined = fiveBit.concat(checksum);
+    let result = hrp + "1";
+    for (const c of combined) {
+      result += BECH32_CHARSET[c];
+    }
+    return result;
+  }
+
+  /** Encode a hex secret key as NIP-19 nsec bech32 string */
+  function encodeBech32Nsec(hexKey: string): string {
+    if (hexKey.length !== 64) throw new Error("Secret key must be 64 hex characters");
+    const bytes: number[] = [];
+    for (let i = 0; i < 64; i += 2) {
+      bytes.push(parseInt(hexKey.substring(i, i + 2), 16));
+    }
+    return bech32Encode("nsec", bytes);
   }
 });

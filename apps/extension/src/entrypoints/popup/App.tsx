@@ -887,6 +887,71 @@ function DevicesView({
   const [admitError, setAdmitError] = useState<string | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
 
+  // Device pubkey card state
+  const [deviceInfo, setDeviceInfo] = useState<{ deviceId: string; label: string; pubkeyHex: string; npub: string } | null>(null);
+
+  // Export key dialog state
+  const [showExportKey, setShowExportKey] = useState(false);
+  const [exportPassword, setExportPassword] = useState("");
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exportResult, setExportResult] = useState<{ nsec: string; hex: string } | null>(null);
+  const [exportCountdown, setExportCountdown] = useState(30);
+
+  useEffect(() => {
+    loadDevices();
+    loadDeviceInfo();
+  }, []);
+
+  // Auto-hide countdown for export key
+  useEffect(() => {
+    if (!exportResult) return;
+    setExportCountdown(30);
+    const interval = setInterval(() => {
+      setExportCountdown((prev) => {
+        if (prev <= 1) {
+          closeExportDialog();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [exportResult]);
+
+  async function loadDeviceInfo() {
+    const response = await browser.runtime.sendMessage({ type: "GET_DEVICE_PUBKEY" }) as { deviceId?: string; label?: string; pubkeyHex?: string; npub?: string; error?: string };
+    if (response.deviceId && response.npub) {
+      setDeviceInfo({
+        deviceId: response.deviceId,
+        label: response.label || "",
+        pubkeyHex: response.pubkeyHex || "",
+        npub: response.npub,
+      });
+    }
+  }
+
+  function closeExportDialog() {
+    setShowExportKey(false);
+    setExportPassword("");
+    setExportError(null);
+    setExportResult(null);
+  }
+
+  async function handleExportKey(e: React.FormEvent) {
+    e.preventDefault();
+    setExportError(null);
+    const response = await browser.runtime.sendMessage({
+      type: "EXPORT_DEVICE_SECRET_KEY",
+      payload: { password: exportPassword },
+    }) as { nsec?: string; hex?: string; error?: string };
+    if (response.error) {
+      setExportError(response.error);
+    } else if (response.nsec && response.hex) {
+      setExportResult({ nsec: response.nsec, hex: response.hex });
+      setExportPassword("");
+    }
+  }
+
   useEffect(() => {
     loadDevices();
   }, []);
@@ -973,6 +1038,97 @@ function DevicesView({
         >
           + Admit Device
         </button>
+      )}
+
+      {/* This device's pubkey card */}
+      {deviceInfo && (
+        <div style={{ marginBottom: "1rem", padding: "0.75rem", background: "#0d1b2a", borderRadius: "4px", border: "1px solid #2a2a4a" }}>
+          <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.5rem" }}>🔑 This Device</div>
+          <div style={{ fontSize: "0.75rem", color: "#aaa", marginBottom: "0.25rem" }}>
+            <span style={{ color: "#888" }}>Label:</span> {deviceInfo.label}
+          </div>
+          <div style={{ fontSize: "0.75rem", color: "#aaa", marginBottom: "0.25rem" }}>
+            <span style={{ color: "#888" }}>ID:</span>{" "}
+            <span style={{ fontFamily: "monospace" }}>{deviceInfo.deviceId.slice(0, 8)}…</span>
+          </div>
+          <div style={{ fontSize: "0.75rem", color: "#aaa", marginBottom: "0.25rem", display: "flex", alignItems: "center", gap: "0.3rem" }}>
+            <span style={{ color: "#888" }}>Hex:</span>{" "}
+            <span style={{ fontFamily: "monospace" }}>{deviceInfo.pubkeyHex.slice(0, 8)}…{deviceInfo.pubkeyHex.slice(56)}</span>
+            <button onClick={() => { navigator.clipboard.writeText(deviceInfo.pubkeyHex); showToast("Copied pubkey hex"); }} style={{ background: "none", border: "none", color: "#4a9eff", fontSize: "0.7rem", cursor: "pointer", padding: 0 }}>Copy</button>
+          </div>
+          <div style={{ fontSize: "0.75rem", color: "#aaa", marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.3rem" }}>
+            <span style={{ color: "#888" }}>npub:</span>{" "}
+            <span style={{ fontFamily: "monospace", wordBreak: "break-all" }}>{deviceInfo.npub}</span>
+            <button onClick={() => { navigator.clipboard.writeText(deviceInfo.npub); showToast("Copied npub"); }} style={{ background: "none", border: "none", color: "#4a9eff", fontSize: "0.7rem", cursor: "pointer", padding: 0, flexShrink: 0 }}>Copy</button>
+          </div>
+          <button
+            onClick={() => setShowExportKey(true)}
+            style={{ background: "none", border: "none", color: "#ff6b6b", fontSize: "0.75rem", cursor: "pointer", padding: 0 }}
+          >
+            Export Secret Key…
+          </button>
+        </div>
+      )}
+
+      {/* Export Secret Key Dialog */}
+      {showExportKey && (
+        <div style={{ marginBottom: "1rem", padding: "0.75rem", background: "#1a0505", borderRadius: "4px", border: "1px solid #5a2020" }}>
+          {!exportResult ? (
+            <>
+              <div style={{ fontWeight: 600, fontSize: "0.85rem", color: "#ff6b6b", marginBottom: "0.5rem" }}>⚠️ Export Secret Key</div>
+              <p style={{ fontSize: "0.7rem", color: "#ff9999", marginBottom: "0.5rem" }}>
+                Your device secret key grants full control over this device's identity. Anyone with this key can impersonate your device. Only export for backup. Never share.
+              </p>
+              <form onSubmit={handleExportKey}>
+                <input
+                  type="password"
+                  value={exportPassword}
+                  onChange={(e) => setExportPassword(e.target.value)}
+                  placeholder="Enter vault password to confirm"
+                  style={{ width: "100%", padding: "0.4rem", borderRadius: "4px", border: "1px solid #5a2020", background: "#16213e", color: "#e0e0e0", fontSize: "0.8rem", marginBottom: "0.5rem" }}
+                  autoFocus
+                />
+                {exportError && <p style={{ color: "#ff6b6b", fontSize: "0.75rem", marginBottom: "0.5rem" }} role="alert">{exportError}</p>}
+                <div style={{ display: "flex", gap: "0.4rem" }}>
+                  <button type="submit" disabled={!exportPassword} style={{ flex: 1, padding: "0.4rem", borderRadius: "4px", border: "none", background: "#5a2020", color: "#e0e0e0", fontSize: "0.8rem", cursor: "pointer", opacity: exportPassword ? 1 : 0.5 }}>
+                    Export
+                  </button>
+                  <button type="button" onClick={closeExportDialog} style={{ flex: 1, padding: "0.4rem", borderRadius: "4px", border: "1px solid #444", background: "transparent", color: "#e0e0e0", fontSize: "0.8rem", cursor: "pointer" }}>
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            </>
+          ) : (
+            <>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+                <div style={{ fontWeight: 600, fontSize: "0.85rem", color: "#ff6b6b" }}>Secret Key</div>
+                <span style={{ fontSize: "0.7rem", color: "#ff9999", fontFamily: "monospace" }}>Hides in {exportCountdown}s</span>
+              </div>
+              <div style={{ marginBottom: "0.5rem" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: "0.7rem", color: "#888" }}>nsec</span>
+                  <button onClick={() => { navigator.clipboard.writeText(exportResult.nsec); showToast("Copied nsec"); }} style={{ background: "none", border: "none", color: "#4a9eff", fontSize: "0.7rem", cursor: "pointer", padding: 0 }}>Copy</button>
+                </div>
+                <div style={{ fontSize: "0.7rem", fontFamily: "monospace", color: "#e0e0e0", wordBreak: "break-all", background: "#0d1b2a", padding: "0.3rem", borderRadius: "3px", marginTop: "0.2rem" }}>
+                  {exportResult.nsec}
+                </div>
+              </div>
+              <div style={{ marginBottom: "0.5rem" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: "0.7rem", color: "#888" }}>hex</span>
+                  <button onClick={() => { navigator.clipboard.writeText(exportResult.hex); showToast("Copied hex"); }} style={{ background: "none", border: "none", color: "#4a9eff", fontSize: "0.7rem", cursor: "pointer", padding: 0 }}>Copy</button>
+                </div>
+                <div style={{ fontSize: "0.7rem", fontFamily: "monospace", color: "#e0e0e0", wordBreak: "break-all", background: "#0d1b2a", padding: "0.3rem", borderRadius: "3px", marginTop: "0.2rem" }}>
+                  {exportResult.hex}
+                </div>
+              </div>
+              <button onClick={closeExportDialog} style={{ width: "100%", padding: "0.4rem", borderRadius: "4px", border: "none", background: "#0f3460", color: "#e0e0e0", fontSize: "0.8rem", cursor: "pointer" }}>
+                Done
+              </button>
+            </>
+          )}
+        </div>
       )}
 
       {/* Admit form */}

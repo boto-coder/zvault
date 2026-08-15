@@ -32,6 +32,7 @@ pub mod device;
 pub mod error;
 pub mod export;
 pub mod import;
+pub mod nip19;
 pub mod nostr;
 /// Nostr relay WebSocket transport (requires tokio runtime).
 #[cfg(feature = "native")]

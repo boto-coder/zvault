@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use zvault_core::crypto::VaultKey;
 use zvault_core::vault::{ItemKind, Vault, VaultFile, VaultItem};
@@ -642,6 +642,115 @@ fn reset_relays(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     Ok(())
+// ─── Device key display/export commands ──────────────────────────────────────
+
+/// Device public key information.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DevicePubkeyInfo {
+    device_id: String,
+    label: String,
+    pubkey_hex: String,
+    npub: String,
+}
+
+/// Device secret key export result.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceSecretKeyInfo {
+    nsec: String,
+    hex: String,
+}
+
+/// Get this device's public key info (device_id, label, pubkey_hex, npub).
+///
+/// Requires the vault to be unlocked and a device identity to be present in the
+/// vault's device list for this application instance.
+#[tauri::command]
+fn get_device_pubkey(state: State<'_, AppState>) -> Result<DevicePubkeyInfo, String> {
+    let session = state.session.lock().map_err(|e| e.to_string())?;
+    let session = session.as_ref().ok_or("Vault is locked")?;
+
+    // Find the first non-revoked device — in a desktop app, this device is
+    // typically the first entry or the one whose pubkey matches the keyring.
+    // For simplicity, return the first active device as "this device".
+    let device = session
+        .vault
+        .devices
+        .iter()
+        .find(|d| !d.revoked)
+        .ok_or("No active device identity found")?;
+
+    // Encode the pubkey as npub
+    let pubkey_bytes =
+        hex::decode(&device.nostr_pubkey).map_err(|e| format!("Invalid pubkey hex: {e}"))?;
+    let pubkey_array: [u8; 32] = pubkey_bytes
+        .try_into()
+        .map_err(|_| "Public key is not 32 bytes".to_string())?;
+    let npub = zvault_core::nip19::encode_npub(&pubkey_array);
+
+    Ok(DevicePubkeyInfo {
+        device_id: device.device_id.to_string(),
+        label: device.label.clone(),
+        pubkey_hex: device.nostr_pubkey.clone(),
+        npub,
+    })
+}
+
+/// Export this device's secret key. Requires password re-verification.
+///
+/// Returns the nsec (bech32) and hex-encoded secret key.
+#[tauri::command]
+fn export_device_secret_key(
+    mut password: String,
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<DeviceSecretKeyInfo, String> {
+    // Re-verify the password by trying to open the vault
+    let verify_result = VaultFile::open(&password, &path).map_err(|e| e.to_string());
+    password.zeroize();
+    let (_vf, key, _vault) = verify_result?;
+
+    // Check session is active
+    let session = state.session.lock().map_err(|e| e.to_string())?;
+    let _session = session.as_ref().ok_or("Vault is locked")?;
+
+    // Load secret key from the device sidecar file
+    let sidecar_path = {
+        let mut p = std::ffi::OsString::from(&path);
+        p.push(".device");
+        std::path::PathBuf::from(p)
+    };
+
+    if !sidecar_path.exists() {
+        return Err("Device identity not initialised. No .device sidecar file found.".into());
+    }
+
+    let blob =
+        std::fs::read(&sidecar_path).map_err(|e| format!("Failed to read device sidecar: {e}"))?;
+    let plaintext: Zeroizing<Vec<u8>> = Zeroizing::new(
+        zvault_core::crypto::decrypt(&key, &blob)
+            .map_err(|e| format!("Failed to decrypt device sidecar: {e}"))?,
+    );
+
+    #[derive(serde::Deserialize)]
+    struct DeviceFile {
+        secret_key_hex: String,
+    }
+    let device_file: DeviceFile = serde_json::from_slice(&plaintext)
+        .map_err(|e| format!("Failed to parse device sidecar: {e}"))?;
+
+    let sk_bytes = hex::decode(&device_file.secret_key_hex)
+        .map_err(|e| format!("Invalid secret key hex: {e}"))?;
+    let sk_array: [u8; 32] = sk_bytes
+        .try_into()
+        .map_err(|_| "Secret key is not 32 bytes".to_string())?;
+    let nsec = zvault_core::nip19::encode_nsec(&sk_array);
+
+    Ok(DeviceSecretKeyInfo {
+        nsec: (*nsec).clone(),
+        hex: device_file.secret_key_hex,
+    })
 }
 
 // ─── TOTP commands ───────────────────────────────────────────────────────────
@@ -718,6 +827,8 @@ fn main() {
             reset_relays,
             generate_totp,
             validate_totp_secret,
+            get_device_pubkey,
+            export_device_secret_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

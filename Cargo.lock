@@ -196,6 +196,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "bech32"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
+
+[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2460,6 +2466,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "base64",
+ "bech32",
  "chacha20 0.9.1",
  "chrono",
  "csv",
@@ -2504,6 +2511,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.3.4",
+ "hex",
  "js-sys",
  "serde-wasm-bindgen",
  "serde_json",
