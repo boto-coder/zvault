@@ -190,6 +190,72 @@ export default defineBackground(() => {
         return { code, remainingSeconds };
       }
 
+      case "GET_RELAY_SETTINGS": {
+        if (!sessionVaultJson) return { error: "Vault is locked" };
+        const vault = JSON.parse(sessionVaultJson);
+        const relays = vault.settings?.relays || [];
+        return { relays };
+      }
+
+      case "ADD_RELAY": {
+        if (!sessionVaultJson || !sessionPassword) return { error: "Vault is locked" };
+        const { url: addUrl } = message.payload as { url: string };
+        const { initWasm: initWasmRelay } = await import("../lib/wasm");
+        const wasmRelay = await initWasmRelay();
+        try {
+          sessionVaultJson = wasmRelay.add_relay_to_vault(sessionVaultJson, addUrl);
+          const encryptedRelay = wasmRelay.encrypt_vault(sessionPassword, sessionVaultJson);
+          await browser.storage.local.set({ vault: Array.from(encryptedRelay) });
+          return { success: true };
+        } catch (err) {
+          return { error: String(err) };
+        }
+      }
+
+      case "REMOVE_RELAY": {
+        if (!sessionVaultJson || !sessionPassword) return { error: "Vault is locked" };
+        const { url: removeUrl } = message.payload as { url: string };
+        const { initWasm: initWasmRelayRm } = await import("../lib/wasm");
+        const wasmRelayRm = await initWasmRelayRm();
+        try {
+          sessionVaultJson = wasmRelayRm.remove_relay_from_vault(sessionVaultJson, removeUrl);
+          const encryptedRelayRm = wasmRelayRm.encrypt_vault(sessionPassword, sessionVaultJson);
+          await browser.storage.local.set({ vault: Array.from(encryptedRelayRm) });
+          return { success: true };
+        } catch (err) {
+          return { error: String(err) };
+        }
+      }
+
+      case "TOGGLE_RELAY": {
+        if (!sessionVaultJson || !sessionPassword) return { error: "Vault is locked" };
+        const { url: toggleUrl, enabled: toggleEnabled } = message.payload as { url: string; enabled: boolean };
+        const { initWasm: initWasmRelayTgl } = await import("../lib/wasm");
+        const wasmRelayTgl = await initWasmRelayTgl();
+        try {
+          sessionVaultJson = wasmRelayTgl.toggle_relay_in_vault(sessionVaultJson, toggleUrl, toggleEnabled);
+          const encryptedRelayTgl = wasmRelayTgl.encrypt_vault(sessionPassword, sessionVaultJson);
+          await browser.storage.local.set({ vault: Array.from(encryptedRelayTgl) });
+          return { success: true };
+        } catch (err) {
+          return { error: String(err) };
+        }
+      }
+
+      case "RESET_RELAYS": {
+        if (!sessionVaultJson || !sessionPassword) return { error: "Vault is locked" };
+        const { initWasm: initWasmRelayRst } = await import("../lib/wasm");
+        const wasmRelayRst = await initWasmRelayRst();
+        try {
+          sessionVaultJson = wasmRelayRst.reset_relays_in_vault(sessionVaultJson);
+          const encryptedRelayRst = wasmRelayRst.encrypt_vault(sessionPassword, sessionVaultJson);
+          await browser.storage.local.set({ vault: Array.from(encryptedRelayRst) });
+          return { success: true };
+        } catch (err) {
+          return { error: String(err) };
+        }
+      }
+
       default:
         return { error: `Unknown message type: ${message.type}` };
     }

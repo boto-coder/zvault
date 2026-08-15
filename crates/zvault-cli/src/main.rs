@@ -168,6 +168,12 @@ enum Commands {
         #[command(subcommand)]
         action: SyncAction,
     },
+
+    /// Manage Nostr relay configuration.
+    Relay {
+        #[command(subcommand)]
+        action: RelayAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -215,8 +221,9 @@ enum SyncAction {
         #[arg(long, short, env = "ZVAULT_PATH")]
         vault: PathBuf,
         /// WebSocket URL of the Nostr relay (e.g. ws://127.0.0.1:4736).
+        /// If omitted, uses enabled relays from vault settings.
         #[arg(long)]
-        relay: String,
+        relay: Option<String>,
         /// Recipient device's public key (hex, 64 chars).
         #[arg(long)]
         recipient: String,
@@ -227,11 +234,61 @@ enum SyncAction {
         #[arg(long, short, env = "ZVAULT_PATH")]
         vault: PathBuf,
         /// WebSocket URL of the Nostr relay.
+        /// If omitted, uses enabled relays from vault settings.
         #[arg(long)]
-        relay: String,
+        relay: Option<String>,
         /// How long to wait for messages (seconds).
         #[arg(long, default_value = "10")]
         timeout: u64,
+    },
+}
+
+/// Relay management subcommands.
+#[derive(Subcommand, Debug)]
+enum RelayAction {
+    /// List all configured relays.
+    List {
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+    },
+    /// Add a new relay.
+    Add {
+        /// WebSocket URL of the relay (ws:// or wss://).
+        url: String,
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+    },
+    /// Remove a relay.
+    Remove {
+        /// WebSocket URL of the relay to remove.
+        url: String,
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+    },
+    /// Enable a relay for sync.
+    Enable {
+        /// WebSocket URL of the relay to enable.
+        url: String,
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+    },
+    /// Disable a relay (keeps it in the list but excludes from sync).
+    Disable {
+        /// WebSocket URL of the relay to disable.
+        url: String,
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+    },
+    /// Reset relays to the default list.
+    Reset {
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
     },
 }
 
@@ -1333,12 +1390,28 @@ fn load_device_identity(
 
 // ─── Sync Commands ───────────────────────────────────────────────────────────
 
-fn cmd_sync_send(vault_path: PathBuf, relay_url: String, recipient_pubkey: String) -> Result<()> {
+fn cmd_sync_send(
+    vault_path: PathBuf,
+    relay_url: Option<String>,
+    recipient_pubkey: String,
+) -> Result<()> {
     let mut password = get_password("Enter master password: ")?;
     let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
     password.zeroize();
     let (vf, key, vault) = result?;
     let _ = vf; // not needed after open
+
+    // Determine relay URL: explicit flag or vault settings.
+    let relay = match relay_url {
+        Some(url) => url,
+        None => {
+            let enabled = zvault_core::settings::enabled_relay_urls(&vault.settings);
+            if enabled.is_empty() {
+                bail!("No relay specified and no enabled relays in vault settings. Use --relay or configure relays with `zvault relay add`.");
+            }
+            enabled[0].clone()
+        }
+    };
 
     // Load device identity.
     let device = load_device_identity(&vault_path, &key)?;
@@ -1373,7 +1446,7 @@ fn cmd_sync_send(vault_path: PathBuf, relay_url: String, recipient_pubkey: Strin
     // Publish to the relay.
     let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
     rt.block_on(async {
-        let mut client = zvault_core::relay::RelayClient::connect(&relay_url)
+        let mut client = zvault_core::relay::RelayClient::connect(&relay)
             .await
             .map_err(|e| anyhow::anyhow!("relay connect failed: {e}"))?;
 
@@ -1390,11 +1463,27 @@ fn cmd_sync_send(vault_path: PathBuf, relay_url: String, recipient_pubkey: Strin
     Ok(())
 }
 
-fn cmd_sync_receive(vault_path: PathBuf, relay_url: String, timeout_secs: u64) -> Result<()> {
+fn cmd_sync_receive(
+    vault_path: PathBuf,
+    relay_url: Option<String>,
+    timeout_secs: u64,
+) -> Result<()> {
     let mut password = get_password("Enter master password: ")?;
     let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
     password.zeroize();
     let (vf, key, mut vault) = result?;
+
+    // Determine relay URL: explicit flag or vault settings.
+    let relay = match relay_url {
+        Some(url) => url,
+        None => {
+            let enabled = zvault_core::settings::enabled_relay_urls(&vault.settings);
+            if enabled.is_empty() {
+                bail!("No relay specified and no enabled relays in vault settings. Use --relay or configure relays with `zvault relay add`.");
+            }
+            enabled[0].clone()
+        }
+    };
 
     // Load device identity.
     let device = load_device_identity(&vault_path, &key)?;
@@ -1404,7 +1493,7 @@ fn cmd_sync_receive(vault_path: PathBuf, relay_url: String, timeout_secs: u64) -
 
     let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
     let messages_applied = rt.block_on(async {
-        let mut client = zvault_core::relay::RelayClient::connect(&relay_url)
+        let mut client = zvault_core::relay::RelayClient::connect(&relay)
             .await
             .map_err(|e| anyhow::anyhow!("relay connect failed: {e}"))?;
 
@@ -1486,6 +1575,123 @@ fn cmd_sync_receive(vault_path: PathBuf, relay_url: String, timeout_secs: u64) -
     } else {
         println!("No sync messages received.");
     }
+    Ok(())
+}
+
+// ─── Relay Commands ──────────────────────────────────────────────────────────
+
+fn cmd_relay_list(vault_path: PathBuf) -> Result<()> {
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (_vf, _key, vault) = result?;
+
+    let relays = &vault.settings.relays;
+    if relays.is_empty() {
+        println!("No relays configured.");
+        return Ok(());
+    }
+
+    println!("{:<8} {:<45} ADDED", "STATUS", "URL");
+    println!("{}", "-".repeat(70));
+    for entry in relays {
+        let status = if entry.enabled { "enabled" } else { "disabled" };
+        println!(
+            "{:<8} {:<45} {}",
+            status,
+            entry.url,
+            entry.added_at.format("%Y-%m-%d")
+        );
+    }
+    println!(
+        "\n{} relay(s) total, {} enabled.",
+        relays.len(),
+        relays.iter().filter(|r| r.enabled).count()
+    );
+    Ok(())
+}
+
+fn cmd_relay_add(vault_path: PathBuf, url: String) -> Result<()> {
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (vf, key, mut vault) = result?;
+
+    zvault_core::settings::add_relay(&mut vault.settings, &url)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    vault.version += 1;
+    vault.updated_at = chrono::Utc::now();
+    vf.save(&key, &vault).context("failed to save vault")?;
+
+    println!("✓ Relay added: {url}");
+    Ok(())
+}
+
+fn cmd_relay_remove(vault_path: PathBuf, url: String) -> Result<()> {
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (vf, key, mut vault) = result?;
+
+    zvault_core::settings::remove_relay(&mut vault.settings, &url)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    vault.version += 1;
+    vault.updated_at = chrono::Utc::now();
+    vf.save(&key, &vault).context("failed to save vault")?;
+
+    println!("✓ Relay removed: {url}");
+    Ok(())
+}
+
+fn cmd_relay_enable(vault_path: PathBuf, url: String) -> Result<()> {
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (vf, key, mut vault) = result?;
+
+    zvault_core::settings::set_relay_enabled(&mut vault.settings, &url, true)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    vault.version += 1;
+    vault.updated_at = chrono::Utc::now();
+    vf.save(&key, &vault).context("failed to save vault")?;
+
+    println!("✓ Relay enabled: {url}");
+    Ok(())
+}
+
+fn cmd_relay_disable(vault_path: PathBuf, url: String) -> Result<()> {
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (vf, key, mut vault) = result?;
+
+    zvault_core::settings::set_relay_enabled(&mut vault.settings, &url, false)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    vault.version += 1;
+    vault.updated_at = chrono::Utc::now();
+    vf.save(&key, &vault).context("failed to save vault")?;
+
+    println!("✓ Relay disabled: {url}");
+    Ok(())
+}
+
+fn cmd_relay_reset(vault_path: PathBuf) -> Result<()> {
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (vf, key, mut vault) = result?;
+
+    zvault_core::settings::reset_relays(&mut vault.settings);
+
+    vault.version += 1;
+    vault.updated_at = chrono::Utc::now();
+    vf.save(&key, &vault).context("failed to save vault")?;
+
+    println!("✓ Relays reset to defaults");
     Ok(())
 }
 
@@ -1617,6 +1823,14 @@ fn main() -> Result<()> {
                 relay,
                 timeout,
             } => cmd_sync_receive(vault, relay, timeout),
+        },
+        Commands::Relay { action } => match action {
+            RelayAction::List { vault } => cmd_relay_list(vault),
+            RelayAction::Add { vault, url } => cmd_relay_add(vault, url),
+            RelayAction::Remove { vault, url } => cmd_relay_remove(vault, url),
+            RelayAction::Enable { vault, url } => cmd_relay_enable(vault, url),
+            RelayAction::Disable { vault, url } => cmd_relay_disable(vault, url),
+            RelayAction::Reset { vault } => cmd_relay_reset(vault),
         },
     }
 }

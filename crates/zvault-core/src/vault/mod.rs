@@ -10,6 +10,7 @@
 //! - [`DeviceEntry`] — metadata about an authorised (or revoked) device.
 //! - [`BiometricUnlockConfig`] — per-device config for biometric unlock (feature-gated).
 
+use crate::settings::VaultSettings;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -278,6 +279,11 @@ pub struct Vault {
     pub items: Vec<VaultItem>,
     /// All devices that have been admitted to (or revoked from) this vault.
     pub devices: Vec<DeviceEntry>,
+    /// Vault-level settings (relay configuration, etc.).
+    /// Uses `#[serde(default)]` for backward compatibility with vault files
+    /// created before settings existed.
+    #[serde(default)]
+    pub settings: VaultSettings,
 }
 
 impl Vault {
@@ -292,6 +298,7 @@ impl Vault {
             updated_at: now,
             items: Vec::new(),
             devices: Vec::new(),
+            settings: VaultSettings::default(),
         }
     }
 
