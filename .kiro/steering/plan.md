@@ -11,7 +11,7 @@ All milestones M0-M12 complete. Preparing for release.
 
 ### P1 — Make Nostr sync actually work across all interfaces
 
-**Status:** 🔲 Planned
+**Status:** ✅ Done
 **Branch:** `feat/nostr-sync-all-interfaces`
 **Requested:** 2026-08-16
 
@@ -95,7 +95,7 @@ This plan item delivers working Nostr sync on all four interfaces (CLI already w
 
 ### P2 — Add force sync (push to all / pull from all) command across all interfaces
 
-**Status:** 🔲 Planned
+**Status:** ✅ Done
 **Branch:** `feat/force-sync-command`
 **Requested:** 2026-08-16
 
