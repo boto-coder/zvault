@@ -81,7 +81,7 @@ function Devices({ onBack, vaultPath }: Props) {
 
   const handleRevoke = async (deviceId: string) => {
     try {
-      await invoke("revoke_device", { deviceId });
+      await invoke("revoke_device", { device_id: deviceId });
       setRevokeConfirm(null);
       await loadDevices();
     } catch (err) {

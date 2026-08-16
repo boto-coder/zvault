@@ -199,10 +199,13 @@ fn build_vault_item(input: &ItemInput) -> Result<VaultItem, String> {
 /// Auto-initialize a device identity when the vault has no active devices.
 ///
 /// Generates a secp256k1 keypair, adds the public key as a DeviceEntry to the
-/// vault, and bumps the version. The secret key is not persisted (follow-up
-/// work for keychain storage). The invite/join-request code only needs the
-/// public key.
-fn auto_init_device(vault: &mut Vault) -> zvault_core::vault::DeviceEntry {
+/// vault, bumps the version, and persists the secret key to an encrypted
+/// `.device` sidecar file alongside the vault.
+fn auto_init_device(
+    vault: &mut Vault,
+    vault_key: &VaultKey,
+    vault_path: &std::path::Path,
+) -> Result<zvault_core::vault::DeviceEntry, String> {
     use aes_gcm::aead::OsRng as AeadOsRng;
     use k256::ecdsa::SigningKey;
 
@@ -214,6 +217,10 @@ fn auto_init_device(vault: &mut Vault) -> zvault_core::vault::DeviceEntry {
     let point = verifying_key.to_encoded_point(false);
     let x_bytes = point.x().expect("invariant: non-identity point");
     let pubkey_hex = hex::encode(x_bytes);
+
+    // Extract secret key bytes and wrap in Zeroizing.
+    let sk_bytes = Zeroizing::new(signing_key.to_bytes().to_vec());
+    let sk_hex = hex::encode(&*sk_bytes);
 
     let device_id = Uuid::new_v4();
     let now = chrono::Utc::now();
@@ -233,7 +240,20 @@ fn auto_init_device(vault: &mut Vault) -> zvault_core::vault::DeviceEntry {
     vault.version += 1;
     vault.updated_at = now;
 
-    entry
+    // Persist the secret key to an encrypted sidecar file.
+    let sidecar_json = format!("{{\"secret_key_hex\":\"{sk_hex}\",\"device_id\":\"{device_id}\"}}");
+    let encrypted = zvault_core::crypto::encrypt(vault_key, sidecar_json.as_bytes())
+        .map_err(|e| format!("Failed to encrypt device sidecar: {e}"))?;
+
+    let sidecar_path = {
+        let mut p = vault_path.as_os_str().to_os_string();
+        p.push(".device");
+        std::path::PathBuf::from(p)
+    };
+    std::fs::write(&sidecar_path, &encrypted)
+        .map_err(|e| format!("Failed to write device sidecar: {e}"))?;
+
+    Ok(entry)
 }
 
 // ─── Tauri commands ──────────────────────────────────────────────────────────
@@ -873,7 +893,8 @@ fn create_invite_code(state: State<'_, AppState>) -> Result<PairingCodeResult, S
         Some(d) => d.clone(),
         None => {
             // Auto-initialize a device identity for this desktop instance.
-            let entry = auto_init_device(&mut session.vault);
+            let vault_path = session.vault_file.path.clone();
+            let entry = auto_init_device(&mut session.vault, &session.key, &vault_path)?;
             session
                 .vault_file
                 .save(&session.key, &session.vault)
@@ -903,7 +924,8 @@ fn create_join_request_code(state: State<'_, AppState>) -> Result<PairingCodeRes
     let device = match session.vault.devices.iter().find(|d| !d.revoked) {
         Some(d) => d.clone(),
         None => {
-            let entry = auto_init_device(&mut session.vault);
+            let vault_path = session.vault_file.path.clone();
+            let entry = auto_init_device(&mut session.vault, &session.key, &vault_path)?;
             session
                 .vault_file
                 .save(&session.key, &session.vault)
