@@ -113,6 +113,38 @@ private interface ZVaultLib : Library {
     // Error string retrieval and free
     fun zvault_e7d4_error_msg_get(err: Pointer): String?
     fun zvault_e7d4_error_msg_free(err: Pointer)
+
+    // --- Sync / NIP-44 / NIP-59 ---
+    fun zvault_e7d4_build_full_sync_message(
+        vault_json: String,
+        device_id: String,
+        secret_key_hex: String,
+        recipient_pubkey_hex: String,
+        out_err: PointerByReference,
+    ): String?
+
+    fun zvault_e7d4_apply_sync_message(
+        vault_json: String,
+        sync_msg_json: String,
+        secret_key_hex: String,
+        sender_pubkey_hex: String,
+        out_err: PointerByReference,
+    ): String?
+
+    fun zvault_e7d4_gift_wrap(
+        sender_sk_hex: String,
+        recipient_pk_hex: String,
+        content: String,
+        kind: Int,
+        tags_json: String,
+        out_err: PointerByReference,
+    ): String?
+
+    fun zvault_e7d4_unwrap_gift_wrap(
+        receiver_sk_hex: String,
+        event_json: String,
+        out_err: PointerByReference,
+    ): String?
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
@@ -252,4 +284,104 @@ fun deleteItem(handle: VaultHandle, itemId: String) {
     val errRef = PointerByReference()
     ZVaultLib.INSTANCE.zvault_e7d4_delete_item(handle.id.toLong(), itemId, errRef)
     checkError(errRef)
+}
+
+// ─── Sync / NIP-44 / NIP-59 API ─────────────────────────────────────────────
+
+/**
+ * Build a full sync message from the current vault state.
+ *
+ * @param vaultJson JSON-serialised vault state.
+ * @param deviceId This device's UUID string.
+ * @param secretKeyHex This device's secp256k1 secret key (hex).
+ * @param recipientPubkeyHex Recipient device's public key (hex).
+ * @return JSON string of the SyncMessage.
+ * @throws ZVaultException on crypto or serialisation failure.
+ */
+@Throws(ZVaultException::class)
+fun buildFullSyncMessage(
+    vaultJson: String,
+    deviceId: String,
+    secretKeyHex: String,
+    recipientPubkeyHex: String,
+): String {
+    val errRef = PointerByReference()
+    val result = ZVaultLib.INSTANCE.zvault_e7d4_build_full_sync_message(
+        vaultJson, deviceId, secretKeyHex, recipientPubkeyHex, errRef
+    )
+    checkError(errRef)
+    return result ?: "{}"
+}
+
+/**
+ * Apply an incoming sync message to the local vault state.
+ *
+ * @param vaultJson Current local vault JSON.
+ * @param syncMsgJson The received SyncMessage JSON.
+ * @param secretKeyHex This device's secp256k1 secret key (hex).
+ * @param senderPubkeyHex Sender device's public key (hex).
+ * @return Updated vault JSON after merge.
+ * @throws ZVaultException on crypto, validation, or merge failure.
+ */
+@Throws(ZVaultException::class)
+fun applySyncMessage(
+    vaultJson: String,
+    syncMsgJson: String,
+    secretKeyHex: String,
+    senderPubkeyHex: String,
+): String {
+    val errRef = PointerByReference()
+    val result = ZVaultLib.INSTANCE.zvault_e7d4_apply_sync_message(
+        vaultJson, syncMsgJson, secretKeyHex, senderPubkeyHex, errRef
+    )
+    checkError(errRef)
+    return result ?: "{}"
+}
+
+/**
+ * Gift-wrap a Nostr event (NIP-59) for metadata hiding.
+ *
+ * @param senderSkHex Sender's secp256k1 secret key (hex).
+ * @param recipientPkHex Recipient's public key (hex).
+ * @param content The inner event content (usually NIP-44 ciphertext).
+ * @param kind Nostr event kind number.
+ * @param tagsJson JSON array of tags (e.g. `[["p", "pubkey"]]`).
+ * @return Gift-wrapped NostrEvent JSON.
+ * @throws ZVaultException on crypto failure.
+ */
+@Throws(ZVaultException::class)
+fun giftWrap(
+    senderSkHex: String,
+    recipientPkHex: String,
+    content: String,
+    kind: UInt,
+    tagsJson: String,
+): String {
+    val errRef = PointerByReference()
+    val result = ZVaultLib.INSTANCE.zvault_e7d4_gift_wrap(
+        senderSkHex, recipientPkHex, content, kind.toInt(), tagsJson, errRef
+    )
+    checkError(errRef)
+    return result ?: "{}"
+}
+
+/**
+ * Unwrap a gift-wrapped Nostr event (NIP-59) to retrieve the inner rumor.
+ *
+ * @param receiverSkHex Receiver's secp256k1 secret key (hex).
+ * @param eventJson The gift-wrapped event JSON.
+ * @return The unwrapped rumor JSON.
+ * @throws ZVaultException on crypto failure or invalid event.
+ */
+@Throws(ZVaultException::class)
+fun unwrapGiftWrap(
+    receiverSkHex: String,
+    eventJson: String,
+): String {
+    val errRef = PointerByReference()
+    val result = ZVaultLib.INSTANCE.zvault_e7d4_unwrap_gift_wrap(
+        receiverSkHex, eventJson, errRef
+    )
+    checkError(errRef)
+    return result ?: "{}"
 }
