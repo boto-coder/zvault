@@ -555,8 +555,10 @@ pub fn build_full_sync_message(
     let sender_uuid = uuid::Uuid::parse_str(device_id)
         .map_err(|e| JsValue::from_str(&format!("invalid device_id UUID: {e}")))?;
 
-    let sk_bytes = hex::decode(secret_key_hex)
-        .map_err(|e| JsValue::from_str(&format!("invalid secret key hex: {e}")))?;
+    let sk_bytes = zeroize::Zeroizing::new(
+        hex::decode(secret_key_hex)
+            .map_err(|e| JsValue::from_str(&format!("invalid secret key hex: {e}")))?,
+    );
 
     let mut clock = zvault_core::sync::LamportClock::new();
 
@@ -589,8 +591,10 @@ pub fn apply_sync_message(
     let msg: zvault_core::sync::SyncMessage = serde_json::from_str(sync_msg_json)
         .map_err(|e| JsValue::from_str(&format!("invalid sync message JSON: {e}")))?;
 
-    let sk_bytes = hex::decode(secret_key_hex)
-        .map_err(|e| JsValue::from_str(&format!("invalid secret key hex: {e}")))?;
+    let sk_bytes = zeroize::Zeroizing::new(
+        hex::decode(secret_key_hex)
+            .map_err(|e| JsValue::from_str(&format!("invalid secret key hex: {e}")))?,
+    );
 
     let mut clock = zvault_core::sync::LamportClock::new();
 
@@ -617,8 +621,10 @@ pub fn nip44_encrypt(
     recipient_pk_hex: &str,
     plaintext: &str,
 ) -> Result<String, JsValue> {
-    let sk_bytes = hex::decode(sender_sk_hex)
-        .map_err(|e| JsValue::from_str(&format!("invalid secret key hex: {e}")))?;
+    let sk_bytes = zeroize::Zeroizing::new(
+        hex::decode(sender_sk_hex)
+            .map_err(|e| JsValue::from_str(&format!("invalid secret key hex: {e}")))?,
+    );
 
     let conversation_key = zvault_core::nostr::get_conversation_key(&sk_bytes, recipient_pk_hex)
         .map_err(|e| JsValue::from_str(&format!("get_conversation_key failed: {e}")))?;
@@ -637,8 +643,10 @@ pub fn nip44_decrypt(
     sender_pk_hex: &str,
     ciphertext_b64: &str,
 ) -> Result<String, JsValue> {
-    let sk_bytes = hex::decode(receiver_sk_hex)
-        .map_err(|e| JsValue::from_str(&format!("invalid secret key hex: {e}")))?;
+    let sk_bytes = zeroize::Zeroizing::new(
+        hex::decode(receiver_sk_hex)
+            .map_err(|e| JsValue::from_str(&format!("invalid secret key hex: {e}")))?,
+    );
 
     let conversation_key = zvault_core::nostr::get_conversation_key(&sk_bytes, sender_pk_hex)
         .map_err(|e| JsValue::from_str(&format!("get_conversation_key failed: {e}")))?;

@@ -295,14 +295,16 @@ export default defineBackground(() => {
         } catch {
           return { error: "Invalid password" };
         }
-        // In the extension, device identity is stored in the vault JSON itself.
-        // The secret key is stored separately in encrypted storage.
-        // For the extension, we store device_secret_key_hex in browser.storage.local (encrypted).
-        const deviceStore = await browser.storage.local.get("device_secret_key_hex");
-        if (!deviceStore.device_secret_key_hex) {
-          return { error: "Device identity not initialised. No secret key stored." };
+        // The secret key is stored in session-only storage (memory, cleared on browser close).
+        // Also check in-memory state as fallback.
+        if (!deviceSecretKeyHex) {
+          const deviceStore = await browser.storage.session.get("deviceSecretKeyHex").catch(() => ({}));
+          if (!deviceStore || !deviceStore.deviceSecretKeyHex) {
+            return { error: "Device identity not available. Secret key is only held in memory during the browser session." };
+          }
+          deviceSecretKeyHex = deviceStore.deviceSecretKeyHex as string;
         }
-        const secretKeyHex = deviceStore.device_secret_key_hex as string;
+        const secretKeyHex = deviceSecretKeyHex;
         // Encode as nsec using a simple bech32 encoding via WASM
         // The WASM module only exposes encode_npub_from_hex; for nsec we return hex only
         // since the extension cannot safely encode nsec without exposing it to WASM memory.
@@ -509,8 +511,15 @@ export default defineBackground(() => {
     // For the extension, we use the noble-secp256k1 algorithm inline.
     const pubkeyHex = await deriveSecp256k1PubkeyHex(secretKeyBytes);
 
-    // Store secret key in browser.storage.local
-    await browser.storage.local.set({ device_secret_key_hex: secretKeyHex });
+    // Store secret key in browser.storage.session (memory-only, cleared on browser close).
+    // SECURITY: Never store the device secret key in browser.storage.local (persistent).
+    await browser.storage.session.set({ device_secret_key_hex: secretKeyHex }).catch(() => {
+      // Fallback: if session storage is unavailable, keep in memory only (deviceSecretKeyHex var).
+    });
+    // Also set in-memory state for immediate use.
+    deviceSecretKeyHex = secretKeyHex;
+    devicePubkeyHex = pubkeyHex;
+    deviceId = deviceId;
 
     // Create device entry
     const deviceId = crypto.randomUUID();

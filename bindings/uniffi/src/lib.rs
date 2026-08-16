@@ -242,8 +242,10 @@ pub fn build_full_sync_message(
     let sender_uuid = uuid::Uuid::parse_str(&device_id)
         .map_err(|e| ZVaultError::InvalidInput(format!("invalid device_id: {e}")))?;
 
-    let sk_bytes = hex::decode(&secret_key_hex)
-        .map_err(|e| ZVaultError::InvalidInput(format!("invalid secret key hex: {e}")))?;
+    let sk_bytes = zeroize::Zeroizing::new(
+        hex::decode(&secret_key_hex)
+            .map_err(|e| ZVaultError::InvalidInput(format!("invalid secret key hex: {e}")))?,
+    );
 
     let mut clock = zvault_core::sync::LamportClock::new();
 
@@ -274,8 +276,10 @@ pub fn apply_sync_message(
     let msg: zvault_core::sync::SyncMessage = serde_json::from_str(&sync_msg_json)
         .map_err(|e| ZVaultError::SerialisationError(format!("invalid sync message: {e}")))?;
 
-    let sk_bytes = hex::decode(&secret_key_hex)
-        .map_err(|e| ZVaultError::InvalidInput(format!("invalid secret key hex: {e}")))?;
+    let sk_bytes = zeroize::Zeroizing::new(
+        hex::decode(&secret_key_hex)
+            .map_err(|e| ZVaultError::InvalidInput(format!("invalid secret key hex: {e}")))?,
+    );
 
     let mut clock = zvault_core::sync::LamportClock::new();
 

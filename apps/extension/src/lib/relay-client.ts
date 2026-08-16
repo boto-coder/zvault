@@ -66,6 +66,16 @@ export class RelayClient {
   private statusCallback: RelayStatusCallback | null = null;
 
   constructor(url: string) {
+    // Validate relay URL: must be wss:// for non-localhost, ws:// only for localhost/127.0.0.1
+    const lower = url.toLowerCase();
+    if (lower.startsWith("ws://")) {
+      const host = lower.slice(5).split("/")[0].split(":")[0];
+      if (host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]") {
+        throw new Error(`Insecure ws:// relay rejected (only allowed for localhost): ${url}`);
+      }
+    } else if (!lower.startsWith("wss://")) {
+      throw new Error(`Invalid relay URL scheme (must be ws:// or wss://): ${url}`);
+    }
     this.url = url;
   }
 
