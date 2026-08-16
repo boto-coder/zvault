@@ -51,6 +51,10 @@ export default defineBackground(() => {
         sessionVaultJson = vaultJson;
         sessionPassword = password;
         resetAutoLock();
+        // Subscribe to incoming sync messages after unlock
+        subscribeToSyncMessages().catch((err) =>
+          console.debug("[ZVault] Subscribe-on-unlock failed:", err)
+        );
         return { success: true };
       }
 
@@ -452,6 +456,22 @@ export default defineBackground(() => {
         }
       }
 
+      case "SET_DEVICE_IDENTITY": {
+        const { secretKeyHex, pubkeyHex, devId } = message.payload as {
+          secretKeyHex: string;
+          pubkeyHex: string;
+          devId: string;
+        };
+        setDeviceIdentity(secretKeyHex, pubkeyHex, devId);
+        return { success: true };
+      }
+
+      case "TRIGGER_SYNC": {
+        if (!sessionVaultJson) return { error: "Vault is locked" };
+        await triggerNostrSync();
+        return { success: true };
+      }
+
       default:
         return { error: `Unknown message type: ${message.type}` };
     }
@@ -601,6 +621,11 @@ export default defineBackground(() => {
     sessionVaultJson = null;
     sessionPassword = null;
     browser.alarms.clear("auto-lock");
+    // Disconnect relay pool on lock
+    if (syncRelayPool) {
+      syncRelayPool.disconnectAll();
+      syncRelayPool = null;
+    }
   }
 
   browser.alarms.onAlarm.addListener((alarm) => {
@@ -611,22 +636,247 @@ export default defineBackground(() => {
 
   // ─── Nostr sync (fire-and-forget) ─────────────────────────────────────
 
+  /** Relay pool for sync connections. Managed lazily on first sync. */
+  let syncRelayPool: import("../lib/relay-client").RelayPool | null = null;
+
+  /** Device secret key stored in session-only memory. */
+  let deviceSecretKeyHex: string | null = null;
+
+  /** Device public key (derived from secret key). */
+  let devicePubkeyHex: string | null = null;
+
+  /** Device UUID. */
+  let deviceId: string | null = null;
+
+  /**
+   * Store the device secret key in session memory.
+   * Called when the user completes device identity setup.
+   */
+  function setDeviceIdentity(secretKeyHex: string, pubkeyHex: string, devId: string): void {
+    deviceSecretKeyHex = secretKeyHex;
+    devicePubkeyHex = pubkeyHex;
+    deviceId = devId;
+    // Also store in browser.storage.session (memory-only, cleared on browser close)
+    browser.storage.session.set({
+      deviceSecretKeyHex: secretKeyHex,
+      devicePubkeyHex: pubkeyHex,
+      deviceId: devId,
+    }).catch(() => {
+      // browser.storage.session may not be available in all browsers
+    });
+  }
+
+  /**
+   * Load device identity from session storage on service worker restart.
+   */
+  async function loadDeviceIdentity(): Promise<void> {
+    try {
+      const stored = await browser.storage.session.get([
+        "deviceSecretKeyHex",
+        "devicePubkeyHex",
+        "deviceId",
+      ]);
+      if (stored.deviceSecretKeyHex && stored.devicePubkeyHex && stored.deviceId) {
+        deviceSecretKeyHex = stored.deviceSecretKeyHex as string;
+        devicePubkeyHex = stored.devicePubkeyHex as string;
+        deviceId = stored.deviceId as string;
+      }
+    } catch {
+      // browser.storage.session not available — identity must be re-set
+    }
+  }
+
+  // Load device identity on service worker startup
+  loadDeviceIdentity();
+
+  /**
+   * Get or create the relay pool, connecting to all enabled relays.
+   */
+  async function getRelayPool(): Promise<import("../lib/relay-client").RelayPool> {
+    if (!sessionVaultJson) throw new Error("Vault is locked");
+
+    const { initWasm } = await import("../lib/wasm");
+    const wasm = await initWasm();
+    const enabledRelays = wasm.get_enabled_relays(sessionVaultJson) as string[];
+
+    if (enabledRelays.length === 0) {
+      throw new Error("No relays configured");
+    }
+
+    const { RelayPool } = await import("../lib/relay-client");
+
+    if (!syncRelayPool) {
+      syncRelayPool = new RelayPool();
+    }
+
+    // Connect to any relays not yet connected
+    for (const url of enabledRelays) {
+      try {
+        await syncRelayPool.addRelay(url);
+      } catch (err) {
+        console.warn(`[ZVault] Failed to connect to relay ${url}:`, err);
+      }
+    }
+
+    return syncRelayPool;
+  }
+
   /**
    * Trigger a Nostr sync to propagate the latest vault state to connected devices.
    * This is best-effort — sync failures are logged but never surfaced to the user
    * during an add-item operation.
+   *
+   * For each non-revoked, non-self device:
+   * 1. Build a full sync message from the current vault state
+   * 2. NIP-59 gift-wrap the sync message JSON for the recipient
+   * 3. Publish the gift-wrapped event to all configured relays via WebSocket
    */
   async function triggerNostrSync(): Promise<void> {
-    // TODO: Implement full NIP-44/NIP-59 sync when relay configuration is available.
-    // For now this is a no-op placeholder that will be wired up when the extension
-    // gains relay settings and device identity management.
-    //
-    // The implementation will:
-    // 1. Build a full sync message from the current vault state
-    // 2. NIP-44 encrypt it for each admitted device's public key
-    // 3. NIP-59 gift-wrap the sealed message
-    // 4. Publish to configured relays via WebSocket
-    console.debug("[ZVault] Nostr sync triggered (not yet wired to relays)");
+    if (!sessionVaultJson || !deviceSecretKeyHex || !devicePubkeyHex || !deviceId) {
+      console.debug("[ZVault] Nostr sync skipped — no vault or device identity");
+      return;
+    }
+
+    const { initWasm } = await import("../lib/wasm");
+    const wasm = await initWasm();
+
+    // Parse vault to get device list
+    const vault = JSON.parse(sessionVaultJson) as {
+      devices: Array<{
+        device_id: string;
+        nostr_pubkey: string;
+        revoked: boolean;
+      }>;
+    };
+
+    // Find peer devices (non-revoked, not self)
+    const peers = vault.devices.filter(
+      (d) => !d.revoked && d.nostr_pubkey !== devicePubkeyHex
+    );
+
+    if (peers.length === 0) {
+      console.debug("[ZVault] Nostr sync skipped — no peer devices");
+      return;
+    }
+
+    const pool = await getRelayPool();
+
+    let publishedCount = 0;
+    for (const peer of peers) {
+      try {
+        // Build the sync message (NIP-44 encrypted vault for this recipient)
+        const syncMsgJson = wasm.build_full_sync_message(
+          sessionVaultJson,
+          deviceId,
+          deviceSecretKeyHex,
+          peer.nostr_pubkey
+        );
+
+        // Gift-wrap the sync message (triple-wrap: rumor → seal → gift-wrap)
+        const giftWrappedJson = wasm.gift_wrap(
+          deviceSecretKeyHex,
+          peer.nostr_pubkey,
+          syncMsgJson,
+          21059, // custom kind for ZVault sync inside the rumor
+          JSON.stringify([["p", peer.nostr_pubkey]])
+        );
+
+        const event = JSON.parse(giftWrappedJson);
+        const sent = await pool.publishToAll(event);
+        publishedCount += sent;
+      } catch (err) {
+        console.warn(`[ZVault] Sync to device ${peer.device_id} failed:`, err);
+      }
+    }
+
+    console.debug(`[ZVault] Nostr sync published to ${publishedCount} relay(s) for ${peers.length} peer(s)`);
+  }
+
+  /**
+   * Subscribe to incoming sync messages on all enabled relays.
+   * Called when the vault is unlocked and device identity is available.
+   */
+  async function subscribeToSyncMessages(): Promise<void> {
+    if (!sessionVaultJson || !deviceSecretKeyHex || !devicePubkeyHex) {
+      return;
+    }
+
+    const pool = await getRelayPool();
+    const { initWasm } = await import("../lib/wasm");
+    const wasm = await initWasm();
+
+    // Subscribe for kind-1059 (gift-wrap) events addressed to our pubkey
+    pool.subscribeAll(
+      {
+        kinds: [1059],
+        "#p": [devicePubkeyHex],
+      },
+      // onEvent callback
+      (event) => {
+        handleIncomingSyncEvent(event, wasm).catch((err) =>
+          console.warn("[ZVault] Failed to process incoming sync event:", err)
+        );
+      },
+      // onEose callback
+      (subId) => {
+        console.debug(`[ZVault] EOSE received for subscription ${subId}`);
+      }
+    );
+
+    console.debug("[ZVault] Subscribed to sync messages on relays");
+  }
+
+  /**
+   * Handle an incoming gift-wrapped sync event.
+   * Unwraps, decrypts, validates, merges into local vault, and re-encrypts.
+   */
+  async function handleIncomingSyncEvent(
+    event: import("../lib/relay-client").NostrEventJson,
+    wasm: import("../lib/wasm").ZVaultWasm
+  ): Promise<void> {
+    if (!sessionVaultJson || !sessionPassword || !deviceSecretKeyHex) {
+      return;
+    }
+
+    try {
+      // 1. Unwrap the gift-wrap to get the inner rumor
+      const rumorJson = wasm.unwrap_gift_wrap(
+        deviceSecretKeyHex,
+        JSON.stringify(event)
+      );
+      const rumor = JSON.parse(rumorJson) as {
+        pubkey: string;
+        content: string;
+        kind: number;
+      };
+
+      // Only process ZVault sync messages
+      if (rumor.kind !== 21059) return;
+
+      // 2. The rumor content is the SyncMessage JSON (already NIP-44 encrypted inside)
+      const syncMsgJson = rumor.content;
+      const senderPubkey = rumor.pubkey;
+
+      // 3. Apply the sync message to our local vault
+      const updatedVaultJson = wasm.apply_sync_message(
+        sessionVaultJson,
+        syncMsgJson,
+        deviceSecretKeyHex,
+        senderPubkey
+      );
+
+      // 4. Update session state
+      sessionVaultJson = updatedVaultJson;
+
+      // 5. Re-encrypt and persist
+      const encrypted = wasm.encrypt_vault(sessionPassword, sessionVaultJson);
+      await browser.storage.local.set({ vault: Array.from(encrypted) });
+
+      console.debug(`[ZVault] Applied incoming sync from ${senderPubkey.substring(0, 8)}...`);
+    } catch (err) {
+      // Non-fatal: stale messages, revoked senders, etc. are expected
+      console.debug("[ZVault] Incoming sync event rejected:", err);
+    }
   }
 
   // ─── Bech32 helper (NIP-19 nsec encoding) ─────────────────────────────

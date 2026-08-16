@@ -40,6 +40,10 @@ totp-rs = "5.6"
 # Needs "native" feature for VaultFile (filesystem I/O) and "biometric" for device management.
 zvault-core = { path = "../../../crates/zvault-core", default-features = false, features = ["native"] }
 
+# Async runtime for sync operations
+tokio = { version = "1.45", features = ["full"] }
+futures-util = "0.3"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
