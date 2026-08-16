@@ -9,6 +9,164 @@ All milestones M0-M12 complete. Preparing for release.
 <!-- New plan items are appended here by the planning subagent -->
 <!-- Format: see process.md "Plan Item Format" -->
 
+### P1 — Make Nostr sync actually work across all interfaces
+
+**Status:** 🔲 Planned
+**Branch:** `feat/nostr-sync-all-interfaces`
+**Requested:** 2026-08-16
+
+#### Description
+
+The core sync engine (M4) is complete and the CLI has full working sync (send/receive via relays with NIP-44 + NIP-59 gift-wrap). However, the desktop app, browser extension, and Android app all have placeholder or missing sync implementations:
+
+- **Desktop (Tauri):** Has relay settings CRUD but no actual sync send/receive — no WebSocket relay connectivity, no `build_full_sync_message`/`apply_sync_message` calls, no gift-wrap.
+- **Browser extension:** `triggerNostrSync()` is an explicit no-op placeholder. The WASM crate (`zvault-wasm`) exports zero sync/NIP-44/NIP-59 functions. No WebSocket relay client exists in the extension.
+- **Android:** `VaultRepository.syncNow()` is a TODO stub. UniFFI bindings don't expose sync functions. No WorkManager-based background sync worker exists.
+
+This plan item delivers working Nostr sync on all four interfaces (CLI already works; desktop, extension, and Android need implementation).
+
+#### Scope
+
+**WASM crate (`crates/zvault-wasm/src/lib.rs`):**
+- Export `build_full_sync_message(vault_json, device_id, secret_key_hex, recipient_pubkey_hex) → SyncMessage JSON`
+- Export `apply_sync_message(vault_json, sync_msg_json, secret_key_hex, sender_pubkey_hex) → updated vault JSON`
+- Export `nip44_encrypt(sender_sk_hex, recipient_pk_hex, plaintext) → ciphertext base64`
+- Export `nip44_decrypt(receiver_sk_hex, sender_pk_hex, ciphertext_b64) → plaintext`
+- Export `gift_wrap(sender_sk_hex, recipient_pk_hex, content, kind, tags) → NostrEvent JSON`
+- Export `unwrap_gift_wrap(receiver_sk_hex, event_json) → rumor JSON`
+- Export `sign_event(sk_hex, event_json) → signed NostrEvent JSON`
+- Export `verify_event(event_json) → bool`
+
+**Browser extension (`apps/extension/`):**
+- Implement WebSocket relay client in background service worker (native `WebSocket` API — no tokio needed)
+- Implement `triggerNostrSync()`: build sync message → NIP-44 encrypt for each peer → gift-wrap → publish to all enabled relays
+- Implement subscribe-on-unlock flow: connect to enabled relays → subscribe for kind-1059 events with `#p` = own pubkey → unwrap → decrypt → merge into local vault → re-encrypt and persist
+- Handle relay reconnection (exponential backoff) and EOSE (end of stored events)
+- Store device secret key in `browser.storage.session` (memory-only, cleared on browser close)
+
+**Desktop app (`apps/desktop/src-tauri/`):**
+- Add Tauri commands: `sync_send_all` (publish to all peers via all enabled relays), `sync_receive` (subscribe and apply incoming messages)
+- Implement publish-on-change: after every vault mutation (`add_item`, `update_item`, `delete_item`), trigger sync send to all admitted devices
+- Implement subscribe-on-unlock: when vault is unlocked, connect to enabled relays, subscribe for gift-wrapped events, apply incoming sync messages automatically
+- Add background relay connection management (connect/disconnect/reconnect lifecycle tied to vault lock state)
+
+**Android app (`apps/android/`):**
+- Add sync functions to UniFFI UDL/bindings: `build_full_sync_message`, `apply_sync_message`, `gift_wrap`, `unwrap_gift_wrap`
+- Implement `NostrSyncWorker` (extends `CoroutineWorker`) for background sync via WorkManager
+- Wire `VaultRepository.syncNow()` to actual relay publish/subscribe via the UniFFI-exposed relay client
+- Schedule periodic sync with WorkManager (configurable interval, default 15 min)
+- Trigger immediate sync on vault mutation
+
+**Dependencies:**
+- P1 depends on no other plan items (core engine and CLI are already complete)
+- Browser extension WebSocket client uses the browser's native `WebSocket` API, not the tokio-based `RelayClient`
+- Desktop and Android use `zvault_core::relay::RelayClient` (tokio-based, behind `native` feature)
+
+#### Definition of Done
+
+- [ ] WASM crate exports all sync/NIP-44/NIP-59/event functions listed above
+- [ ] `wasm-pack build` succeeds for `zvault-wasm` with sync exports
+- [ ] Browser extension `triggerNostrSync()` publishes gift-wrapped sync messages to configured relays via WebSocket
+- [ ] Browser extension subscribes on unlock and applies incoming sync messages
+- [ ] Desktop app publishes sync messages on vault mutation
+- [ ] Desktop app subscribes on unlock and applies incoming sync messages automatically
+- [ ] Android UniFFI bindings expose sync functions
+- [ ] Android `NostrSyncWorker` runs via WorkManager and performs sync
+- [ ] Integration test: two simulated devices sync via TestRelay (already exists in `two_device_sync.rs` — verify it still passes)
+- [ ] End-to-end test: CLI sends sync → extension receives and merges (manual verification)
+- [ ] All tests pass (`cargo test --workspace --all-features`)
+- [ ] Zero clippy warnings
+- [ ] Security review completed (no CRITICAL/MEDIUM open)
+- [ ] Committed and pushed to branch
+
+#### Expected Outputs
+
+- `crates/zvault-wasm/src/lib.rs` — new sync/NIP-44/NIP-59 WASM exports
+- `apps/extension/src/entrypoints/background.ts` — real `triggerNostrSync()` implementation + relay WebSocket client
+- `apps/extension/src/lib/relay-client.ts` — new file: WebSocket relay client for extension
+- `apps/desktop/src-tauri/src/main.rs` — new Tauri commands for sync send/receive + background subscription
+- `apps/desktop/src-tauri/src/sync.rs` — new file: relay connection manager and sync orchestration
+- `bindings/uniffi/src/lib.rs` — new sync function exports
+- `bindings/uniffi/src/zvault.udl` — UDL additions for sync types and functions
+- `apps/android/app/src/main/java/com/zvault/sync/NostrSyncWorker.kt` — new file: WorkManager worker
+- `apps/android/app/src/main/java/com/zvault/VaultRepository.kt` — `syncNow()` wired to real implementation
+
+---
+
+### P2 — Add force sync (push to all / pull from all) command across all interfaces
+
+**Status:** 🔲 Planned
+**Branch:** `feat/force-sync-command`
+**Requested:** 2026-08-16
+
+#### Description
+
+Add a user-triggered "Sync Now" action that performs a full bidirectional sync: builds a full sync message from the current vault state and publishes it to ALL admitted devices via all configured relays, then pulls any pending events from relays and applies them. This is useful for:
+
+- Initial sync after pairing a new device (auto-sync hasn't kicked in yet)
+- Recovering from a period of offline operation
+- User confidence ("I want to make sure everything is up to date")
+- Debugging sync issues (explicit trigger with visible feedback)
+
+The action must be available on all four interfaces: CLI command, desktop UI button, browser extension UI button, and Android UI button.
+
+**Behaviour:**
+1. **Push phase:** Build a `SyncMessage` (op: Full) from the current vault state. For each admitted, non-revoked device (excluding self), NIP-44 encrypt the message for that device's pubkey, NIP-59 gift-wrap it, and publish the gift-wrapped event to every enabled relay.
+2. **Pull phase:** Connect to all enabled relays (if not already connected). Subscribe with filter `{ kinds: [1059], #p: [own_pubkey], since: last_sync_timestamp }`. Collect events until EOSE (or timeout). Unwrap, decrypt, and apply each valid sync message. Save the updated vault.
+3. **Feedback:** Report to the user: number of messages sent, number of messages received and applied, final vault version. Surface any errors (relay connection failures, rejected messages) as warnings, not hard failures.
+
+**Prerequisite:** P1 must be complete (sync infrastructure must exist on each interface before "force sync" can be implemented on top of it).
+
+#### Scope
+
+**CLI (`crates/zvault-cli/`):**
+- Add `zvault sync` subcommand (no `send`/`receive` qualifier) that performs the full push+pull cycle to all peers on all enabled relays
+- Retain existing `zvault sync send --recipient <pubkey>` and `zvault sync receive` for targeted operations
+- Output: `✓ Pushed to N devices via M relays. Received K messages. Vault version: V`
+
+**Desktop app (`apps/desktop/`):**
+- Add Tauri command `force_sync() → SyncResult { sent: u32, received: u32, version: u64, warnings: Vec<String> }`
+- Add "Sync Now" button in the UI header/toolbar (visible when vault is unlocked)
+- Show spinner during sync, then toast with result summary
+- Disable auto-sync briefly during force sync to avoid race conditions
+
+**Browser extension (`apps/extension/`):**
+- Add "Sync Now" button in the popup UI (visible when vault is unlocked)
+- Invoke background script's `forceSyncAll()` function (push + pull cycle)
+- Show sync status indicator (syncing / synced / error) in popup
+- Badge icon update on successful sync (brief checkmark overlay)
+
+**Android app (`apps/android/`):**
+- Add "Sync Now" button on the vault list screen toolbar
+- Trigger immediate WorkManager one-shot sync (or direct coroutine if foreground)
+- Show snackbar with result: "Synced: sent to N devices, received K updates"
+- Pull-to-refresh on vault list also triggers force sync
+
+#### Definition of Done
+
+- [ ] `zvault sync` CLI command performs full push+pull and reports results
+- [ ] Desktop "Sync Now" button triggers force sync and shows result toast
+- [ ] Extension "Sync Now" button triggers force sync and shows status
+- [ ] Android "Sync Now" button triggers force sync and shows snackbar result
+- [ ] Push phase sends to ALL admitted non-revoked devices (not just one recipient)
+- [ ] Pull phase applies all pending messages and saves vault
+- [ ] Partial failures (one relay down) do not block sync on other relays — errors reported as warnings
+- [ ] Stale/replay messages are correctly rejected (vault_version and Lamport clock guards)
+- [ ] All tests pass (`cargo test --workspace --all-features`)
+- [ ] Zero clippy warnings
+- [ ] Security review completed (no CRITICAL/MEDIUM open)
+- [ ] Committed and pushed to branch
+
+#### Expected Outputs
+
+- `crates/zvault-cli/src/main.rs` — new `SyncAction::All` variant and `cmd_sync_all()` implementation
+- `apps/desktop/src-tauri/src/main.rs` — new `force_sync` Tauri command
+- `apps/desktop/src/components/SyncButton.tsx` — new file: Sync Now button component
+- `apps/extension/src/entrypoints/background.ts` — new `forceSyncAll()` function
+- `apps/extension/src/entrypoints/popup/components/SyncButton.tsx` — new file: popup sync button
+- `apps/android/app/src/main/java/com/zvault/VaultViewModel.kt` — `forceSyncAll()` action
+- `apps/android/app/src/main/java/com/zvault/ui/screens/VaultListScreen.kt` — Sync Now button in toolbar
+
 ## Bugs
 
 <!-- Bug items are appended here by the triage subagent -->
