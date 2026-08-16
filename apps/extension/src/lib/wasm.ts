@@ -24,6 +24,11 @@ export interface ZVaultWasm {
   reset_relays_in_vault(vault_json: string): string;
   get_enabled_relays(vault_json: string): string[];
   encode_npub_from_hex(pubkey_hex: string): string;
+  create_invite_code(pubkey_hex: string, label: string, vault_id: string): string;
+  create_join_request_code(pubkey_hex: string, label: string): string;
+  decode_pairing_code(code: string): unknown;
+  create_response_code(response_type: string, pubkey_hex: string, label: string, vault_id?: string): string;
+  admit_device_from_pairing(vault_json: string, remote_pubkey: string, label: string): string;
 }
 
 let wasmInstance: ZVaultWasm | null = null;
@@ -87,6 +92,11 @@ export async function initWasm(): Promise<ZVaultWasm> {
     reset_relays_in_vault: glueModule.reset_relays_in_vault as ZVaultWasm["reset_relays_in_vault"],
     get_enabled_relays: glueModule.get_enabled_relays as ZVaultWasm["get_enabled_relays"],
     encode_npub_from_hex: glueModule.encode_npub_from_hex as ZVaultWasm["encode_npub_from_hex"],
+    create_invite_code: glueModule.create_invite_code as ZVaultWasm["create_invite_code"],
+    create_join_request_code: glueModule.create_join_request_code as ZVaultWasm["create_join_request_code"],
+    decode_pairing_code: glueModule.decode_pairing_code as ZVaultWasm["decode_pairing_code"],
+    create_response_code: glueModule.create_response_code as ZVaultWasm["create_response_code"],
+    admit_device_from_pairing: glueModule.admit_device_from_pairing as ZVaultWasm["admit_device_from_pairing"],
   };
 
   return wasmInstance;
