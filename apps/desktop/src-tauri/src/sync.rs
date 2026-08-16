@@ -28,6 +28,7 @@ pub struct SyncReceiveResult {
     /// Number of messages received and applied.
     pub messages_applied: u32,
     /// Final vault version after applying messages.
+    #[allow(dead_code)]
     pub vault_version: u64,
     /// Warnings (non-fatal errors).
     pub warnings: Vec<String>,
@@ -155,7 +156,7 @@ pub async fn sync_send_all(
 /// events for the caller to process (unwrap + apply).
 pub async fn sync_receive(
     vault: &Vault,
-    secret_key: &Zeroizing<Vec<u8>>,
+    _secret_key: &Zeroizing<Vec<u8>>,
     own_pubkey_hex: &str,
 ) -> SyncReceiveResult {
     let mut result = SyncReceiveResult {
@@ -213,6 +214,7 @@ pub async fn sync_receive(
 ///
 /// Returns `Ok(true)` if the message was applied, `Ok(false)` if it was
 /// rejected (stale, wrong kind, etc.), and `Err` on hard failures.
+#[allow(dead_code)]
 pub fn unwrap_and_apply_event(
     vault: &mut Vault,
     event: &NostrEvent,
