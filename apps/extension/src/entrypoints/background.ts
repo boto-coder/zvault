@@ -472,6 +472,12 @@ export default defineBackground(() => {
         return { success: true };
       }
 
+      case "FORCE_SYNC": {
+        if (!sessionVaultJson) return { error: "Vault is locked" };
+        const result = await forceSyncAll();
+        return result;
+      }
+
       default:
         return { error: `Unknown message type: ${message.type}` };
     }
@@ -719,6 +725,156 @@ export default defineBackground(() => {
     }
 
     return syncRelayPool;
+  }
+
+  /**
+   * Force sync: full push+pull cycle to all peers via all relays.
+   *
+   * Push: For each non-revoked peer, builds sync message → gift-wrap → publish.
+   * Pull: Subscribes on all relays for kind-1059 events, collects until EOSE/timeout,
+   *       unwraps, decrypts, applies, saves.
+   *
+   * Returns a result object with sent/received counts and warnings.
+   */
+  async function forceSyncAll(): Promise<{
+    sent: number;
+    received: number;
+    version: number;
+    warnings: string[];
+  }> {
+    const warnings: string[] = [];
+    let sent = 0;
+    let received = 0;
+
+    if (!sessionVaultJson || !deviceSecretKeyHex || !devicePubkeyHex || !deviceId) {
+      return { sent: 0, received: 0, version: 0, warnings: ["No vault or device identity"] };
+    }
+
+    const { initWasm } = await import("../lib/wasm");
+    const wasm = await initWasm();
+
+    const vault = JSON.parse(sessionVaultJson) as {
+      version: number;
+      devices: Array<{
+        device_id: string;
+        nostr_pubkey: string;
+        revoked: boolean;
+      }>;
+    };
+
+    // ── Push phase ──
+    const peers = vault.devices.filter(
+      (d) => !d.revoked && d.nostr_pubkey !== devicePubkeyHex
+    );
+
+    if (peers.length === 0) {
+      warnings.push("No peer devices to sync with");
+    } else {
+      try {
+        const pool = await getRelayPool();
+
+        for (const peer of peers) {
+          try {
+            const syncMsgJson = wasm.build_full_sync_message(
+              sessionVaultJson!,
+              deviceId!,
+              deviceSecretKeyHex!,
+              peer.nostr_pubkey
+            );
+
+            const giftWrappedJson = wasm.gift_wrap(
+              deviceSecretKeyHex!,
+              peer.nostr_pubkey,
+              syncMsgJson,
+              21059,
+              JSON.stringify([["p", peer.nostr_pubkey]])
+            );
+
+            const event = JSON.parse(giftWrappedJson);
+            const published = await pool.publishToAll(event);
+            if (published > 0) sent++;
+          } catch (err) {
+            warnings.push(`Push to ${peer.device_id.substring(0, 8)} failed: ${err}`);
+          }
+        }
+      } catch (err) {
+        warnings.push(`Relay pool error: ${err}`);
+      }
+    }
+
+    // ── Pull phase ──
+    try {
+      const pool = await getRelayPool();
+
+      // Collect events via a time-limited subscription
+      const events: import("../lib/relay-client").NostrEventJson[] = [];
+      await new Promise<void>((resolve) => {
+        const timeout = setTimeout(() => resolve(), 5000); // 5 second timeout
+
+        pool.subscribeAll(
+          {
+            kinds: [1059],
+            "#p": [devicePubkeyHex!],
+          },
+          (event) => {
+            events.push(event);
+          },
+          (_subId) => {
+            // EOSE — all stored events received
+            clearTimeout(timeout);
+            // Give a brief window for any last events
+            setTimeout(() => resolve(), 500);
+          }
+        );
+      });
+
+      // Apply collected events
+      for (const event of events) {
+        try {
+          const rumorJson = wasm.unwrap_gift_wrap(
+            deviceSecretKeyHex!,
+            JSON.stringify(event)
+          );
+          const rumor = JSON.parse(rumorJson) as {
+            pubkey: string;
+            content: string;
+            kind: number;
+          };
+
+          if (rumor.kind !== 21059) continue;
+
+          const updatedVaultJson = wasm.apply_sync_message(
+            sessionVaultJson!,
+            rumor.content,
+            deviceSecretKeyHex!,
+            rumor.pubkey
+          );
+
+          sessionVaultJson = updatedVaultJson;
+          received++;
+        } catch (err) {
+          // Non-fatal: stale, duplicate, or revoked sender
+          console.debug("[ZVault] Force sync pull event rejected:", err);
+        }
+      }
+
+      // Persist if we received anything
+      if (received > 0 && sessionPassword) {
+        const encrypted = wasm.encrypt_vault(sessionPassword, sessionVaultJson!);
+        await browser.storage.local.set({ vault: Array.from(encrypted) });
+      }
+    } catch (err) {
+      warnings.push(`Pull phase error: ${err}`);
+    }
+
+    const finalVault = JSON.parse(sessionVaultJson!) as { version: number };
+
+    return {
+      sent,
+      received,
+      version: finalVault.version,
+      warnings,
+    };
   }
 
   /**

@@ -51,6 +51,8 @@ fun ZVaultNavGraph(
     val selectedItem by viewModel.selectedItem.collectAsState()
     val biometricEnabled by viewModel.biometricEnabled.collectAsState()
     val biometricAvailable by viewModel.biometricAvailable.collectAsState()
+    val isSyncing by viewModel.isSyncing.collectAsState()
+    val syncResult by viewModel.syncResult.collectAsState()
 
     // Navigate based on auth state
     val startDestination = when (uiState) {
@@ -81,8 +83,18 @@ fun ZVaultNavGraph(
         }
 
         composable(Routes.VAULT_LIST) {
+            val syncMsg = syncResult?.let { result ->
+                if (result.warnings.isNotEmpty()) {
+                    "Sync: ${result.warnings.first()}"
+                } else {
+                    "Synced: sent ${result.sent}, received ${result.received}"
+                }
+            }
             VaultListScreen(
                 items = items,
+                isSyncing = isSyncing,
+                syncResultMessage = syncMsg,
+                onSyncResultShown = { viewModel.clearSyncResult() },
                 onItemClick = { item ->
                     viewModel.selectItem(item.id)
                     navController.navigate(Routes.itemDetail(item.id))
@@ -104,7 +116,7 @@ fun ZVaultNavGraph(
                     navController.navigate(Routes.DEVICES)
                 },
                 onSyncClick = {
-                    viewModel.syncNow()
+                    viewModel.forceSyncAll()
                 },
             )
         }

@@ -1050,6 +1050,89 @@ struct SyncResult {
     warnings: Vec<String>,
 }
 
+/// Force sync: push to all peers + pull pending messages (full bidirectional).
+///
+/// 1. Push phase: builds full sync message for each non-revoked peer,
+///    NIP-59 gift-wraps it, and publishes to all enabled relays.
+/// 2. Pull phase: connects to all enabled relays, subscribes for kind-1059
+///    events, collects until EOSE/timeout, unwraps and applies.
+/// 3. Reports results.
+#[tauri::command]
+async fn force_sync(state: State<'_, AppState>) -> Result<SyncResult, String> {
+    // Extract data from session while holding the lock briefly
+    let (vault_clone, device_id, secret_key, own_pubkey) = {
+        let session = state.session.lock().map_err(|e| e.to_string())?;
+        let session = session.as_ref().ok_or("Vault is locked")?;
+
+        let device = session
+            .vault
+            .devices
+            .iter()
+            .find(|d| !d.revoked)
+            .ok_or("No active device identity found")?;
+
+        let sidecar_path = {
+            let path_str = session.vault_file.path.to_string_lossy().to_string();
+            let mut p = std::ffi::OsString::from(&path_str);
+            p.push(".device");
+            std::path::PathBuf::from(p)
+        };
+
+        let sk = if sidecar_path.exists() {
+            let blob = std::fs::read(&sidecar_path)
+                .map_err(|e| format!("Failed to read device sidecar: {e}"))?;
+            let plaintext = zvault_core::crypto::decrypt(&session.key, &blob)
+                .map_err(|e| format!("Failed to decrypt device sidecar: {e}"))?;
+
+            #[derive(serde::Deserialize)]
+            struct DeviceFile {
+                secret_key_hex: String,
+            }
+            let device_file: DeviceFile = serde_json::from_slice(&plaintext)
+                .map_err(|e| format!("Failed to parse device sidecar: {e}"))?;
+            let sk_bytes = hex::decode(&device_file.secret_key_hex)
+                .map_err(|e| format!("Invalid secret key hex: {e}"))?;
+            Zeroizing::new(sk_bytes)
+        } else {
+            return Err("Device identity not initialised. No .device sidecar file found.".into());
+        };
+
+        (
+            session.vault.clone(),
+            device.device_id,
+            sk,
+            device.nostr_pubkey.clone(),
+        )
+    };
+
+    // ── Push phase ──
+    let send_result =
+        sync::sync_send_all(&vault_clone, device_id, &secret_key, &own_pubkey).await;
+
+    // ── Pull phase ──
+    let recv_result =
+        sync::sync_receive(&vault_clone, &secret_key, &own_pubkey).await;
+
+    // Combine warnings
+    let mut warnings = send_result.warnings;
+    warnings.extend(recv_result.warnings);
+
+    // Get final vault version
+    let final_version = {
+        let session = state.session.lock().map_err(|e| e.to_string())?;
+        let session = session.as_ref().ok_or("Vault is locked")?;
+        session.vault.version
+    };
+
+    Ok(SyncResult {
+        peers_sent: send_result.peers_sent,
+        relays_published: send_result.relays_published,
+        messages_received: recv_result.messages_applied,
+        vault_version: final_version,
+        warnings,
+    })
+}
+
 /// Send sync messages to all admitted peer devices via all enabled relays.
 ///
 /// For each non-revoked, non-self device: builds a full sync message,
@@ -1227,6 +1310,7 @@ fn main() {
             confirm_pairing,
             sync_send_all,
             sync_receive,
+            force_sync,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

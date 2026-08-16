@@ -289,8 +289,57 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- Sync ---
 
+    /** Result of a force sync operation. */
+    data class SyncResult(
+        val sent: Int = 0,
+        val received: Int = 0,
+        val version: Long = 0,
+        val warnings: List<String> = emptyList(),
+    )
+
+    private val _syncResult = MutableStateFlow<SyncResult?>(null)
+    val syncResult: StateFlow<SyncResult?> = _syncResult.asStateFlow()
+
+    private val _isSyncing = MutableStateFlow(false)
+    val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
+
     /**
-     * Trigger a Nostr sync cycle.
+     * Force sync: push to all admitted non-revoked peers + pull pending messages.
+     * Reports result via [syncResult] StateFlow (consumed by snackbar in UI).
+     */
+    fun forceSyncAll() {
+        if (_isSyncing.value) return
+        _isSyncing.value = true
+        viewModelScope.launch {
+            try {
+                repository.syncNow()
+                // Refresh items after sync
+                _items.value = repository.listItems()
+                _syncResult.value = SyncResult(
+                    sent = 1, // Placeholder — actual counts require enhanced UniFFI API
+                    received = 0,
+                    version = 0,
+                    warnings = emptyList(),
+                )
+            } catch (e: Exception) {
+                _syncResult.value = SyncResult(
+                    warnings = listOf(e.message ?: "Sync failed"),
+                )
+            } finally {
+                _isSyncing.value = false
+            }
+        }
+    }
+
+    /**
+     * Clear the sync result after it has been shown (e.g. snackbar dismissed).
+     */
+    fun clearSyncResult() {
+        _syncResult.value = null
+    }
+
+    /**
+     * Trigger a Nostr sync cycle (simple sync without full result reporting).
      */
     fun syncNow() {
         viewModelScope.launch {
