@@ -29,6 +29,15 @@ export interface ZVaultWasm {
   decode_pairing_code(code: string): unknown;
   create_response_code(response_type: string, pubkey_hex: string, label: string, vault_id?: string): string;
   admit_device_from_pairing(vault_json: string, remote_pubkey: string, label: string): string;
+  // Sync / NIP-44 / NIP-59
+  build_full_sync_message(vault_json: string, device_id: string, secret_key_hex: string, recipient_pubkey_hex: string): string;
+  apply_sync_message(vault_json: string, sync_msg_json: string, secret_key_hex: string, sender_pubkey_hex: string): string;
+  nip44_encrypt(sender_sk_hex: string, recipient_pk_hex: string, plaintext: string): string;
+  nip44_decrypt(receiver_sk_hex: string, sender_pk_hex: string, ciphertext_b64: string): string;
+  gift_wrap(sender_sk_hex: string, recipient_pk_hex: string, content: string, kind: number, tags_json: string): string;
+  unwrap_gift_wrap(receiver_sk_hex: string, event_json: string): string;
+  sign_event(sk_hex: string, event_json: string): string;
+  verify_event(event_json: string): boolean;
 }
 
 let wasmInstance: ZVaultWasm | null = null;
@@ -97,6 +106,15 @@ export async function initWasm(): Promise<ZVaultWasm> {
     decode_pairing_code: glueModule.decode_pairing_code as ZVaultWasm["decode_pairing_code"],
     create_response_code: glueModule.create_response_code as ZVaultWasm["create_response_code"],
     admit_device_from_pairing: glueModule.admit_device_from_pairing as ZVaultWasm["admit_device_from_pairing"],
+    // Sync / NIP-44 / NIP-59
+    build_full_sync_message: glueModule.build_full_sync_message as ZVaultWasm["build_full_sync_message"],
+    apply_sync_message: glueModule.apply_sync_message as ZVaultWasm["apply_sync_message"],
+    nip44_encrypt: glueModule.nip44_encrypt as ZVaultWasm["nip44_encrypt"],
+    nip44_decrypt: glueModule.nip44_decrypt as ZVaultWasm["nip44_decrypt"],
+    gift_wrap: glueModule.gift_wrap as ZVaultWasm["gift_wrap"],
+    unwrap_gift_wrap: glueModule.unwrap_gift_wrap as ZVaultWasm["unwrap_gift_wrap"],
+    sign_event: glueModule.sign_event as ZVaultWasm["sign_event"],
+    verify_event: glueModule.verify_event as ZVaultWasm["verify_event"],
   };
 
   return wasmInstance;

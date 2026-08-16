@@ -24,6 +24,19 @@ namespace zvault {
 
   [Throws=ZVaultError]
   void close_vault([ByRef] VaultHandle handle);
+
+  // Sync / NIP-44 / NIP-59 operations
+  [Throws=ZVaultError]
+  string build_full_sync_message(string vault_json, string device_id, string secret_key_hex, string recipient_pubkey_hex);
+
+  [Throws=ZVaultError]
+  string apply_sync_message(string vault_json, string sync_msg_json, string secret_key_hex, string sender_pubkey_hex);
+
+  [Throws=ZVaultError]
+  string gift_wrap(string sender_sk_hex, string recipient_pk_hex, string content, u32 kind, string tags_json);
+
+  [Throws=ZVaultError]
+  string unwrap_gift_wrap(string receiver_sk_hex, string event_json);
 };
 
 [Error]

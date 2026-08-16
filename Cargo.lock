@@ -2498,10 +2498,12 @@ dependencies = [
 name = "zvault-uniffi"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "serde_json",
  "thiserror 2.0.20",
  "uniffi",
  "uuid",
+ "zeroize",
  "zvault-core",
 ]
 
@@ -2520,5 +2522,6 @@ dependencies = [
  "totp-rs",
  "uuid",
  "wasm-bindgen",
+ "zeroize",
  "zvault-core",
 ]

@@ -536,6 +536,213 @@ pub fn admit_device_from_pairing(
         .map_err(|e| JsValue::from_str(&format!("serialisation error: {e}")))
 }
 
+// ─── Sync / NIP-44 / NIP-59 WASM bindings ────────────────────────────────────
+
+/// Build a full sync message from the current vault state.
+///
+/// NIP-44 encrypts the vault JSON for the specified recipient and returns
+/// the serialised SyncMessage as a JSON string.
+#[wasm_bindgen]
+pub fn build_full_sync_message(
+    vault_json: &str,
+    device_id: &str,
+    secret_key_hex: &str,
+    recipient_pubkey_hex: &str,
+) -> Result<String, JsValue> {
+    let vault: zvault_core::vault::Vault = serde_json::from_str(vault_json)
+        .map_err(|e| JsValue::from_str(&format!("invalid vault JSON: {e}")))?;
+
+    let sender_uuid = uuid::Uuid::parse_str(device_id)
+        .map_err(|e| JsValue::from_str(&format!("invalid device_id UUID: {e}")))?;
+
+    let sk_bytes = hex::decode(secret_key_hex)
+        .map_err(|e| JsValue::from_str(&format!("invalid secret key hex: {e}")))?;
+
+    let mut clock = zvault_core::sync::LamportClock::new();
+
+    let msg = zvault_core::sync::build_full_sync_message(
+        &vault,
+        &mut clock,
+        sender_uuid,
+        &sk_bytes,
+        recipient_pubkey_hex,
+    )
+    .map_err(|e| JsValue::from_str(&format!("build sync message failed: {e}")))?;
+
+    serde_json::to_string(&msg).map_err(|e| JsValue::from_str(&format!("serialisation error: {e}")))
+}
+
+/// Apply an incoming sync message to the local vault.
+///
+/// Validates the sender, decrypts the payload, merges items (LWW), and returns
+/// the updated vault as a JSON string.
+#[wasm_bindgen]
+pub fn apply_sync_message(
+    vault_json: &str,
+    sync_msg_json: &str,
+    secret_key_hex: &str,
+    sender_pubkey_hex: &str,
+) -> Result<String, JsValue> {
+    let mut vault: zvault_core::vault::Vault = serde_json::from_str(vault_json)
+        .map_err(|e| JsValue::from_str(&format!("invalid vault JSON: {e}")))?;
+
+    let msg: zvault_core::sync::SyncMessage = serde_json::from_str(sync_msg_json)
+        .map_err(|e| JsValue::from_str(&format!("invalid sync message JSON: {e}")))?;
+
+    let sk_bytes = hex::decode(secret_key_hex)
+        .map_err(|e| JsValue::from_str(&format!("invalid secret key hex: {e}")))?;
+
+    let mut clock = zvault_core::sync::LamportClock::new();
+
+    zvault_core::sync::apply_sync_message(
+        &mut vault,
+        &msg,
+        &mut clock,
+        &sk_bytes,
+        sender_pubkey_hex,
+    )
+    .map_err(|e| JsValue::from_str(&format!("apply sync message failed: {e}")))?;
+
+    serde_json::to_string(&vault)
+        .map_err(|e| JsValue::from_str(&format!("serialisation error: {e}")))
+}
+
+/// NIP-44 encrypt plaintext for a recipient.
+///
+/// Derives the conversation key from sender's secret key and recipient's pubkey,
+/// then encrypts. Returns base64-encoded ciphertext.
+#[wasm_bindgen]
+pub fn nip44_encrypt(
+    sender_sk_hex: &str,
+    recipient_pk_hex: &str,
+    plaintext: &str,
+) -> Result<String, JsValue> {
+    let sk_bytes = hex::decode(sender_sk_hex)
+        .map_err(|e| JsValue::from_str(&format!("invalid secret key hex: {e}")))?;
+
+    let conversation_key = zvault_core::nostr::get_conversation_key(&sk_bytes, recipient_pk_hex)
+        .map_err(|e| JsValue::from_str(&format!("get_conversation_key failed: {e}")))?;
+
+    zvault_core::nostr::nip44_encrypt(&conversation_key, plaintext.as_bytes())
+        .map_err(|e| JsValue::from_str(&format!("nip44_encrypt failed: {e}")))
+}
+
+/// NIP-44 decrypt ciphertext from a sender.
+///
+/// Derives the conversation key from receiver's secret key and sender's pubkey,
+/// then decrypts the base64-encoded payload. Returns plaintext string.
+#[wasm_bindgen]
+pub fn nip44_decrypt(
+    receiver_sk_hex: &str,
+    sender_pk_hex: &str,
+    ciphertext_b64: &str,
+) -> Result<String, JsValue> {
+    let sk_bytes = hex::decode(receiver_sk_hex)
+        .map_err(|e| JsValue::from_str(&format!("invalid secret key hex: {e}")))?;
+
+    let conversation_key = zvault_core::nostr::get_conversation_key(&sk_bytes, sender_pk_hex)
+        .map_err(|e| JsValue::from_str(&format!("get_conversation_key failed: {e}")))?;
+
+    let plaintext_bytes = zvault_core::nostr::nip44_decrypt(&conversation_key, ciphertext_b64)
+        .map_err(|e| JsValue::from_str(&format!("nip44_decrypt failed: {e}")))?;
+
+    String::from_utf8(plaintext_bytes)
+        .map_err(|e| JsValue::from_str(&format!("decrypted payload is not valid UTF-8: {e}")))
+}
+
+/// Create a NIP-59 gift-wrapped event.
+///
+/// Triple-wraps the content (rumor → seal → gift-wrap) to hide sender identity.
+/// Returns the gift-wrapped NostrEvent as a JSON string.
+#[wasm_bindgen]
+pub fn gift_wrap(
+    sender_sk_hex: &str,
+    recipient_pk_hex: &str,
+    content: &str,
+    kind: u32,
+    tags_json: &str,
+) -> Result<String, JsValue> {
+    let sk_bytes = hex::decode(sender_sk_hex)
+        .map_err(|e| JsValue::from_str(&format!("invalid secret key hex: {e}")))?;
+    let sk = zeroize::Zeroizing::new(sk_bytes);
+
+    let tags: Vec<Vec<String>> = serde_json::from_str(tags_json)
+        .map_err(|e| JsValue::from_str(&format!("invalid tags JSON: {e}")))?;
+
+    let event = zvault_core::nostr::gift_wrap(&sk, recipient_pk_hex, content, kind, &tags)
+        .map_err(|e| JsValue::from_str(&format!("gift_wrap failed: {e}")))?;
+
+    serde_json::to_string(&event)
+        .map_err(|e| JsValue::from_str(&format!("serialisation error: {e}")))
+}
+
+/// Unwrap a NIP-59 gift-wrapped event.
+///
+/// Decrypts the triple-wrapped event and returns the inner rumor as a JSON string.
+#[wasm_bindgen]
+pub fn unwrap_gift_wrap(receiver_sk_hex: &str, event_json: &str) -> Result<String, JsValue> {
+    let sk_bytes = hex::decode(receiver_sk_hex)
+        .map_err(|e| JsValue::from_str(&format!("invalid secret key hex: {e}")))?;
+    let sk = zeroize::Zeroizing::new(sk_bytes);
+
+    let event: zvault_core::nostr::NostrEvent = serde_json::from_str(event_json)
+        .map_err(|e| JsValue::from_str(&format!("invalid event JSON: {e}")))?;
+
+    let rumor = zvault_core::nostr::unwrap_gift_wrap(&sk, &event)
+        .map_err(|e| JsValue::from_str(&format!("unwrap_gift_wrap failed: {e}")))?;
+
+    serde_json::to_string(&rumor)
+        .map_err(|e| JsValue::from_str(&format!("serialisation error: {e}")))
+}
+
+/// Sign a NIP-01 Nostr event.
+///
+/// Takes a secret key and event fields as JSON, returns the signed NostrEvent JSON.
+/// The event_json must contain: content, kind, tags, created_at.
+#[wasm_bindgen]
+pub fn sign_event(sk_hex: &str, event_json: &str) -> Result<String, JsValue> {
+    let sk_bytes = hex::decode(sk_hex)
+        .map_err(|e| JsValue::from_str(&format!("invalid secret key hex: {e}")))?;
+    let sk = zeroize::Zeroizing::new(sk_bytes);
+
+    #[derive(Deserialize)]
+    struct EventInput {
+        content: String,
+        kind: u32,
+        #[serde(default)]
+        tags: Vec<Vec<String>>,
+        created_at: i64,
+    }
+
+    let input: EventInput = serde_json::from_str(event_json)
+        .map_err(|e| JsValue::from_str(&format!("invalid event JSON: {e}")))?;
+
+    let event = zvault_core::nostr::sign_event(
+        &sk,
+        &input.content,
+        input.kind,
+        input.tags,
+        input.created_at,
+    )
+    .map_err(|e| JsValue::from_str(&format!("sign_event failed: {e}")))?;
+
+    serde_json::to_string(&event)
+        .map_err(|e| JsValue::from_str(&format!("serialisation error: {e}")))
+}
+
+/// Verify a NIP-01 event signature.
+///
+/// Returns true if the event signature is valid, false otherwise.
+#[wasm_bindgen]
+pub fn verify_event(event_json: &str) -> bool {
+    let event: std::result::Result<zvault_core::nostr::NostrEvent, _> =
+        serde_json::from_str(event_json);
+    match event {
+        Ok(e) => zvault_core::nostr::verify_event(&e).is_ok(),
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

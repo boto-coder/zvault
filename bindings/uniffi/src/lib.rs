@@ -223,3 +223,110 @@ pub fn close_vault(handle: &VaultHandle) -> Result<(), ZVaultError> {
     // VaultSession (including VaultKey) is dropped here → key bytes zeroed.
     Ok(())
 }
+
+// ─── Sync / NIP-44 / NIP-59 functions ────────────────────────────────────────
+
+/// Build a full sync message for a recipient device.
+///
+/// NIP-44 encrypts the vault JSON for the specified recipient and returns
+/// the serialised SyncMessage as a JSON string.
+pub fn build_full_sync_message(
+    vault_json: String,
+    device_id: String,
+    secret_key_hex: String,
+    recipient_pubkey_hex: String,
+) -> Result<String, ZVaultError> {
+    let vault: zvault_core::vault::Vault = serde_json::from_str(&vault_json)
+        .map_err(|e| ZVaultError::SerialisationError(format!("invalid vault JSON: {e}")))?;
+
+    let sender_uuid = uuid::Uuid::parse_str(&device_id)
+        .map_err(|e| ZVaultError::InvalidInput(format!("invalid device_id: {e}")))?;
+
+    let sk_bytes = hex::decode(&secret_key_hex)
+        .map_err(|e| ZVaultError::InvalidInput(format!("invalid secret key hex: {e}")))?;
+
+    let mut clock = zvault_core::sync::LamportClock::new();
+
+    let msg = zvault_core::sync::build_full_sync_message(
+        &vault,
+        &mut clock,
+        sender_uuid,
+        &sk_bytes,
+        &recipient_pubkey_hex,
+    )?;
+
+    serde_json::to_string(&msg).map_err(|e| ZVaultError::SerialisationError(e.to_string()))
+}
+
+/// Apply an incoming sync message to the local vault.
+///
+/// Validates the sender, decrypts, merges items, and returns the updated
+/// vault JSON string.
+pub fn apply_sync_message(
+    vault_json: String,
+    sync_msg_json: String,
+    secret_key_hex: String,
+    sender_pubkey_hex: String,
+) -> Result<String, ZVaultError> {
+    let mut vault: zvault_core::vault::Vault = serde_json::from_str(&vault_json)
+        .map_err(|e| ZVaultError::SerialisationError(format!("invalid vault JSON: {e}")))?;
+
+    let msg: zvault_core::sync::SyncMessage = serde_json::from_str(&sync_msg_json)
+        .map_err(|e| ZVaultError::SerialisationError(format!("invalid sync message: {e}")))?;
+
+    let sk_bytes = hex::decode(&secret_key_hex)
+        .map_err(|e| ZVaultError::InvalidInput(format!("invalid secret key hex: {e}")))?;
+
+    let mut clock = zvault_core::sync::LamportClock::new();
+
+    zvault_core::sync::apply_sync_message(
+        &mut vault,
+        &msg,
+        &mut clock,
+        &sk_bytes,
+        &sender_pubkey_hex,
+    )?;
+
+    serde_json::to_string(&vault).map_err(|e| ZVaultError::SerialisationError(e.to_string()))
+}
+
+/// Create a NIP-59 gift-wrapped event.
+///
+/// Returns the gift-wrapped NostrEvent as a JSON string.
+pub fn gift_wrap(
+    sender_sk_hex: String,
+    recipient_pk_hex: String,
+    content: String,
+    kind: u32,
+    tags_json: String,
+) -> Result<String, ZVaultError> {
+    let sk_bytes = hex::decode(&sender_sk_hex)
+        .map_err(|e| ZVaultError::InvalidInput(format!("invalid secret key hex: {e}")))?;
+    let sk = zeroize::Zeroizing::new(sk_bytes);
+
+    let tags: Vec<Vec<String>> = serde_json::from_str(&tags_json)
+        .map_err(|e| ZVaultError::SerialisationError(format!("invalid tags JSON: {e}")))?;
+
+    let event = zvault_core::nostr::gift_wrap(&sk, &recipient_pk_hex, &content, kind, &tags)?;
+
+    serde_json::to_string(&event).map_err(|e| ZVaultError::SerialisationError(e.to_string()))
+}
+
+/// Unwrap a NIP-59 gift-wrapped event.
+///
+/// Returns the inner rumor as a JSON string.
+pub fn unwrap_gift_wrap(
+    receiver_sk_hex: String,
+    event_json: String,
+) -> Result<String, ZVaultError> {
+    let sk_bytes = hex::decode(&receiver_sk_hex)
+        .map_err(|e| ZVaultError::InvalidInput(format!("invalid secret key hex: {e}")))?;
+    let sk = zeroize::Zeroizing::new(sk_bytes);
+
+    let event: zvault_core::nostr::NostrEvent = serde_json::from_str(&event_json)
+        .map_err(|e| ZVaultError::SerialisationError(format!("invalid event JSON: {e}")))?;
+
+    let rumor = zvault_core::nostr::unwrap_gift_wrap(&sk, &event)?;
+
+    serde_json::to_string(&rumor).map_err(|e| ZVaultError::SerialisationError(e.to_string()))
+}
