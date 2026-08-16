@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ItemCard from "../components/ItemCard";
+import SyncButton from "../components/SyncButton";
 
 interface ItemSummary {
   id: string;
@@ -106,6 +107,7 @@ function VaultList({ onSelectItem, onLocked, onDevices }: Props) {
             >
               + Add Item
             </button>
+            <SyncButton onSyncComplete={loadItems} />
             <button
               type="button"
               onClick={onDevices}

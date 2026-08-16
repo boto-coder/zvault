@@ -263,6 +263,15 @@ enum PairAction {
 /// Sync subcommands.
 #[derive(Subcommand, Debug)]
 enum SyncAction {
+    /// Full push+pull sync to all admitted devices via all enabled relays.
+    All {
+        /// Path to the vault file.
+        #[arg(long, short, env = "ZVAULT_PATH")]
+        vault: PathBuf,
+        /// How long to wait for incoming messages (seconds).
+        #[arg(long, default_value = "10")]
+        timeout: u64,
+    },
     /// Send the vault state to another device via a Nostr relay.
     Send {
         /// Path to the vault file.
@@ -1704,6 +1713,199 @@ fn cmd_pair_import(vault_path: PathBuf, code: String, yes: bool) -> Result<()> {
 
 // ─── Sync Commands ───────────────────────────────────────────────────────────
 
+fn cmd_sync_all(vault_path: PathBuf, timeout_secs: u64) -> Result<()> {
+    let mut password = get_password("Enter master password: ")?;
+    let result = VaultFile::open(&password, &vault_path).context("failed to open vault");
+    password.zeroize();
+    let (vf, key, mut vault) = result?;
+
+    // Load device identity.
+    let device = load_device_identity(&vault_path, &key)?;
+    let sk_bytes = Zeroizing::new(
+        hex::decode(&device.secret_key_hex).context("invalid secret key hex in device sidecar")?,
+    );
+
+    // Get enabled relays.
+    let relay_urls = zvault_core::settings::enabled_relay_urls(&vault.settings);
+    if relay_urls.is_empty() {
+        bail!("No enabled relays in vault settings. Use `zvault relay add` first.");
+    }
+
+    // Find peer devices (non-revoked, not self).
+    let peers: Vec<_> = vault
+        .devices
+        .iter()
+        .filter(|d| !d.revoked && d.nostr_pubkey != device.pubkey_hex)
+        .cloned()
+        .collect();
+
+    if peers.is_empty() {
+        println!("No peer devices to sync with.");
+        return Ok(());
+    }
+
+    let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
+
+    // ── Push phase ──────────────────────────────────────────────────────────
+    let mut push_count: u32 = 0;
+    let mut relay_publish_count: u32 = 0;
+    let mut warnings: Vec<String> = Vec::new();
+
+    // Build gift-wrapped events for each peer.
+    let mut events_to_publish: Vec<zvault_core::nostr::NostrEvent> = Vec::new();
+
+    for peer in &peers {
+        let mut clock = zvault_core::sync::LamportClock::new();
+        match zvault_core::sync::build_full_sync_message(
+            &vault,
+            &mut clock,
+            device.device_id,
+            &sk_bytes,
+            &peer.nostr_pubkey,
+        ) {
+            Ok(sync_msg) => {
+                let sync_json = match serde_json::to_string(&sync_msg) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        warnings.push(format!("Serialize for {} failed: {e}", peer.label));
+                        continue;
+                    }
+                };
+                match zvault_core::nostr::gift_wrap(
+                    &sk_bytes,
+                    &peer.nostr_pubkey,
+                    &sync_json,
+                    21059,
+                    &[],
+                ) {
+                    Ok(event) => {
+                        events_to_publish.push(event);
+                        push_count += 1;
+                    }
+                    Err(e) => {
+                        warnings.push(format!("Gift-wrap for {} failed: {e}", peer.label));
+                    }
+                }
+            }
+            Err(e) => {
+                warnings.push(format!("Build sync for {} failed: {e}", peer.label));
+            }
+        }
+    }
+
+    // Publish to all relays.
+    rt.block_on(async {
+        for url in &relay_urls {
+            match zvault_core::relay::RelayClient::connect(url).await {
+                Ok(mut client) => {
+                    for event in &events_to_publish {
+                        match client.publish(event).await {
+                            Ok(()) => relay_publish_count += 1,
+                            Err(e) => {
+                                warnings.push(format!("Publish to {url} failed: {e}"));
+                            }
+                        }
+                    }
+                    let _ = client.close().await;
+                }
+                Err(e) => {
+                    warnings.push(format!("Connect to {url} failed: {e}"));
+                }
+            }
+        }
+    });
+
+    // ── Pull phase ──────────────────────────────────────────────────────────
+    let mut recv_count: u32 = 0;
+
+    rt.block_on(async {
+        let since = chrono::Utc::now().timestamp() - 259200; // 3 days
+        let filter = zvault_core::relay::SubscriptionFilter {
+            kinds: Some(vec![1059]),
+            p_tags: Some(vec![device.pubkey_hex.clone()]),
+            since: Some(since),
+            ..Default::default()
+        };
+
+        for url in &relay_urls {
+            match zvault_core::relay::RelayClient::connect(url).await {
+                Ok(mut client) => {
+                    match client.subscribe(filter.clone()).await {
+                        Ok(mut rx) => {
+                            let timeout = std::time::Duration::from_secs(timeout_secs);
+                            loop {
+                                match tokio::time::timeout(timeout, rx.recv()).await {
+                                    Ok(Some(event)) => {
+                                        match zvault_core::nostr::unwrap_gift_wrap(
+                                            &sk_bytes, &event,
+                                        ) {
+                                            Ok(rumor) => {
+                                                if let Ok(sync_msg) = serde_json::from_str::<
+                                                    zvault_core::sync::SyncMessage,
+                                                >(
+                                                    &rumor.content
+                                                ) {
+                                                    let mut clock =
+                                                        zvault_core::sync::LamportClock::new();
+                                                    match zvault_core::sync::apply_sync_message(
+                                                        &mut vault,
+                                                        &sync_msg,
+                                                        &mut clock,
+                                                        &sk_bytes,
+                                                        &rumor.pubkey,
+                                                    ) {
+                                                        Ok(()) => recv_count += 1,
+                                                        Err(e) => {
+                                                            warnings.push(format!(
+                                                                "Sync rejected: {e}"
+                                                            ));
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                warnings.push(format!("Unwrap failed: {e}"));
+                                            }
+                                        }
+                                    }
+                                    Ok(None) => break,
+                                    Err(_) => break,
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warnings.push(format!("Subscribe on {url} failed: {e}"));
+                        }
+                    }
+                    let _ = client.close().await;
+                }
+                Err(e) => {
+                    warnings.push(format!("Connect to {url} failed: {e}"));
+                }
+            }
+        }
+    });
+
+    // ── Save & report ───────────────────────────────────────────────────────
+    if recv_count > 0 {
+        vf.save(&key, &vault).context("failed to save vault")?;
+    }
+
+    println!(
+        "✓ Pushed to {} device(s) via {} relay(s). Received {} message(s). Vault version: {}",
+        push_count,
+        relay_urls.len(),
+        recv_count,
+        vault.version
+    );
+
+    for w in &warnings {
+        eprintln!("  warning: {w}");
+    }
+
+    Ok(())
+}
+
 fn cmd_sync_send(
     vault_path: PathBuf,
     relay_url: Option<String>,
@@ -2138,6 +2340,7 @@ fn main() -> Result<()> {
             PairAction::Import { code, vault, yes } => cmd_pair_import(vault, code, yes),
         },
         Commands::Sync { action } => match action {
+            SyncAction::All { vault, timeout } => cmd_sync_all(vault, timeout),
             SyncAction::Send {
                 vault,
                 relay,

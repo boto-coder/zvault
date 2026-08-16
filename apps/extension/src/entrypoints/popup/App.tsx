@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
+import { SyncButton } from "./components/SyncButton";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -529,6 +530,7 @@ function ItemListView({
           >
             +
           </button>
+          <SyncButton />
           <button
             onClick={onDevices}
             aria-label="Devices"
