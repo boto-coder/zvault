@@ -118,7 +118,7 @@ jobs:
           node-version: "22"
 
       - name: Download WASM pkg
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: release-wasm
           path: .
@@ -247,7 +247,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Download all release artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: artefacts/

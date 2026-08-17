@@ -123,7 +123,7 @@ jobs:
           node-version: "22"
 
       - name: Download WASM pkg
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: zvault-wasm-pkg
           path: crates/zvault-wasm/pkg/
